@@ -12,149 +12,107 @@ import OSLog
 
 /// Defined item open modes.
 enum PassthroughFSItemOpenMode: Int32 {
-    /// Close mode
     case close = -1
-    /// Read-only mode
     case readOnly = 0
-    /// Read and write mode
     case readWrite = 1
 }
 
-/// A PassthroughFSItem represents a file system item.
+/// A PassthroughFSItem represents a file system item backed by an SMB path.
 class PassthroughFSItem: FSItem {
 
-    /// File descriptor of the item
-    var fileDescriptor: Int32
-    /// Open mode of the item
+    var smbPath: String
     var openMode: PassthroughFSItemOpenMode
-    /// Parent item (for a root item, the parent is nil)
     var parent: PassthroughFSItem?
-    /// Name of the item
     var name: String
-    /// Item type
     var itemType: FSItem.ItemType
-    /// Inode of the item (used to cache items in PassthroughFSVolume)
     var inode: UInt64
-    /// Dispatch queue for changing the item's PassthroughFSItemOpenMode
-    var openModeQueue: DispatchQueue
+    let openModeLock = NSLock()
 
-    /// Creates a new instance of PassthroughFSItem, to create the root item.
-    /// - Parameters:
-    ///   - name: The name of the item.
-    ///   - fileDescriptor: The file descriptor of the item.
-    ///   - type: The type of the item.
-    ///   - openFlags: The open mode of the item.
-    init(name: String, fileDescriptor: Int32, type: FSItem.ItemType, openFlags: PassthroughFSItemOpenMode) {
-        self.name           = name
-        self.parent         = nil
-        self.fileDescriptor = fileDescriptor
-        self.itemType       = type
-        self.openMode       = openFlags
-        self.inode          = 0
-        self.openModeQueue = DispatchQueue(label: "com.apple.fskit.passthroughfs.item.\(name).openmode.queue")
+    /// Attributes captured during directory enumeration; avoids per-entry `stat` on lookup/getattr.
+    var cachedRaw: PassthroughRawAttributes?
+
+    var fileDescriptor: Int32 { -1 }
+
+    init(name: String, smbPath: String, type: FSItem.ItemType, openFlags: PassthroughFSItemOpenMode, inode: UInt64) {
+        self.name = name
+        self.parent = nil
+        self.smbPath = smbPath
+        self.itemType = type
+        self.openMode = openFlags
+        self.inode = inode
         super.init()
-        try? self.initInode()
     }
 
-    /// Creates a new instance of PassthroughFSItem.
-    /// - Parameters:
-    ///   - name: The name of the item.
-    ///   - parent: The parent item.
-    ///   - type: The type of the item.
-    init(name: String, parent: PassthroughFSItem, type: FSItem.ItemType) throws {
-        self.name           = name
-        self.parent         = parent
-        self.openMode       = .close
-        self.fileDescriptor = -1
-        self.itemType       = type
-        self.inode          = 0
-        self.openModeQueue  = DispatchQueue(label: "com.apple.fskit.passthroughfs.item.\(name).openmode.queue")
+    /// Creates a child item using data already returned by `readdir` / directory listing.
+    init(name: String, parent: PassthroughFSItem, smbPath: String, type: FSItem.ItemType,
+         inode: UInt64, cachedRaw: PassthroughRawAttributes?) {
+        self.name = name
+        self.parent = parent
+        self.openMode = .close
+        self.smbPath = smbPath
+        self.itemType = type
+        self.inode = inode
+        self.cachedRaw = cachedRaw
         super.init()
-        try self.upgradeOpenMode(mode: .readOnly)
-        try self.initInode()
-        try self.closeItem()
     }
 
-    /// Initializes the inode number of the item.
-    private func initInode() throws {
-        var statResult = stat()
-        _ = try throwErrno { fstat(self.fileDescriptor, &statResult) }
-        self.inode = statResult.st_ino
+    /// Creates a child item after a mutating operation; one `stat` to refresh identity.
+    init(name: String, parent: PassthroughFSItem, type: FSItem.ItemType, backend: SMBBackend) throws {
+        self.name = name
+        self.parent = parent
+        self.openMode = .close
+        self.itemType = type
+        self.smbPath = parent.smbPath.appendingSMBComponent(name)
+        self.inode = 0
+        self.cachedRaw = nil
+        super.init()
+        let attrs = try backend.attributesOfItem(atPath: self.smbPath)
+        self.inode = SMBAttributeMapping.inode(from: attrs, fallbackPath: self.smbPath)
+        self.cachedRaw = SMBAttributeMapping.rawAttributes(from: attrs, path: self.smbPath)
+        if let resourceType = attrs[.fileResourceTypeKey] as? URLFileResourceType {
+            self.itemType = SMBAttributeMapping.itemType(from: resourceType)
+        }
     }
 
-    /// Opens the item with given mode using `openat`, and if successful, returns a new file descriptor, otherwise throwing errno.
-    ///
-    /// In order for `openat` to work, the file system needs the parent's item file descriptor. If the parent doesn't have one,
-    /// this method opens the parent item to get its file descriptor. After opening the item,
-    /// this closes the parent item file descriptor, if it wasn't open before.
-    private func openWithMode(mode: PassthroughFSItemOpenMode) throws -> Int32 {
-        guard let parent = self.parent else {
-            Logger.passthroughfs.error("\(#function): The parent is nil, can't open the item (\(self.name))")
-            return -1
-        }
-        var parentFD = parent.fileDescriptor
-        let oldParentFD = parentFD
-
-        // Check if the parent is open; if not, open it also.
-        if oldParentFD == -1 {
-            try parent.upgradeOpenMode(mode: .readOnly)
-            parentFD = parent.fileDescriptor
-        }
-
-        // Convert PassthroughFSItemOpenMode to O_RDONLY/O_RDWR.
-        var convertedMode = O_RDONLY
-        if mode == .readWrite {
-            convertedMode = O_RDWR
-        }
-        // Open the file.
-        let fileDescriptor = try throwErrno { openat(parentFD, self.name, convertedMode | O_SYMLINK) }
-
-        // If the parent was closed, before opening the file, close it.
-        if oldParentFD == -1 {
-            try parent.closeItem()
-        }
-
-        // Return the file descriptor of the item.
-        return fileDescriptor
-    }
-
-    /// Upgrades the open mode of the item to the given mode.
-    ///
-    /// Upgrade means that the item can go from .close to .readOnly to .readWrite.
-    /// If the item was opened to a .readOnly and needs to upgrade to .readWrite, this method creates a new file descriptor for the .readWrite mode,
-    /// and closes the old .readOnly file descriptor.
     func upgradeOpenMode(mode: PassthroughFSItemOpenMode) throws {
         if mode == .close {
-            Logger.passthroughfs.error("\(#function): Can't pass .close as mode")
             throw POSIXError(.EINVAL)
         }
-        if (self.fileDescriptor != -1) && (self.openMode == .readWrite || self.openMode == mode) {
-            // The item already has a file descriptor and mode is set, so there is nothing to do.
+        self.openModeLock.lock()
+        defer { self.openModeLock.unlock() }
+        if self.openMode == .readWrite || self.openMode == mode {
             return
         }
-
-        try self.openModeQueue.sync {
-            let oldFD = self.fileDescriptor
-            try self.fileDescriptor = self.openWithMode(mode: mode)
-
-            // With a new fileDescriptor set, close the old file descriptor if it exists.
-            if oldFD > 0 {
-                _ = try throwErrno { Darwin.close(oldFD) }
-            }
-            self.openMode = mode
-        }
+        self.openMode = mode
     }
 
-    /// Closes the item by calling `close`.
+    func forceReopen(mode: PassthroughFSItemOpenMode) throws {
+        self.openModeLock.lock()
+        self.openMode = .close
+        self.openModeLock.unlock()
+        try self.upgradeOpenMode(mode: mode)
+    }
+
     func closeItem() throws {
-        try self.openModeQueue.sync {
-            if self.fileDescriptor == -1 || self.openMode == .close {
-                return
-            }
-            _ = try throwErrno { Darwin.close(self.fileDescriptor) }
-            self.fileDescriptor = -1
-            self.openMode = .close
-        }
+        self.openModeLock.lock()
+        defer { self.openModeLock.unlock() }
+        self.openMode = .close
     }
 
+    func clearCachedMetadata() {
+        self.cachedRaw = nil
+    }
+}
+
+extension String {
+    func appendingSMBComponent(_ component: String) -> String {
+        let trimmed = component.trimmingCharacters(in: CharacterSet(charactersIn: "/\\"))
+        if isEmpty {
+            return trimmed
+        }
+        if hasSuffix("/") {
+            return self + trimmed
+        }
+        return self + "/" + trimmed
+    }
 }

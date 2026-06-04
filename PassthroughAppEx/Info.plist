@@ -26,7 +26,7 @@
 		<key>FSPersonalities</key>
 		<dict/>
 		<key>FSRequiresSecurityScopedPathURLResources</key>
-		<true/>
+		<false/>
 		<key>FSShortName</key>
 		<string>passthrough</string>
 		<key>FSSupportsBlockResources</key>

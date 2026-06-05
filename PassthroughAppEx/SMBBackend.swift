@@ -12,9 +12,11 @@ import OSLog
 final class SMBBackend: @unchecked Sendable {
 
     private let client: SMB2DirectClient
+    let config: SMBConfiguration
 
-    init() throws {
-        self.client = try SMB2DirectClient()
+    init(config: SMBConfiguration) throws {
+        self.config = config
+        self.client = try SMB2DirectClient(config: config)
     }
 
     func disconnect() {

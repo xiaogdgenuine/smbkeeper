@@ -16,7 +16,7 @@ import SystemConfiguration
 let maxSymlinkSize: Int = 4096
 let modeAllBits: Int32 = 0o7777
 
-/// A PassthroughFSVolume represents a volume backed by an SMB share via AMSMB2.
+/// A PassthroughFSVolume represents a volume backed by an SMB share.
 class PassthroughFSVolume: FSVolume,
                            FSVolume.ReadWriteOperations,
                            FSVolume.RenameOperations,
@@ -39,27 +39,82 @@ class PassthroughFSVolume: FSVolume,
 
     let smb: SMBBackend
     let volumeLabel: String
+    let connectionID: String
+
+    /// The SMB config used to create this volume.
+    let smbConfig: SMBConfiguration
+
+    /// File logger for writing runtime logs to the shared container.
+    private let logQueue = DispatchQueue(label: "com.apple.fskit.passthroughfs.log.queue",
+                                         qos: .background)
+    private let logFileURL: URL?
 
     private var sleepWakeMonitor: SleepWakeMonitor?
     private var networkMonitor: SystemNetworkMonitor?
     private let wakeQueue = DispatchQueue(label: "com.apple.fskit.passthroughfs.wake.queue")
     private let reconnectLock = NSLock()
 
-    init(backend: SMBBackend, volumeName: FSFileName) throws {
+    init(backend: SMBBackend, volumeName: FSFileName, smbConfig: SMBConfiguration) throws {
         self.smb = backend
-        self.volumeLabel = volumeName.string ?? "smb_passthrough"
+        self.smbConfig = smbConfig
+        self.connectionID = smbConfig.connectionID
+        self.volumeLabel = volumeName.string ?? smbConfig.displayName
+
+        // Set up log file in the shared App Group container
+        let appGroupID = "group.com.example.apple-samplecode.Passthrough"
+        if let containerURL = FileManager.default
+            .containerURL(forSecurityApplicationGroupIdentifier: appGroupID) {
+            let logsDir = containerURL.appendingPathComponent("logs", isDirectory: true)
+            try? FileManager.default.createDirectory(at: logsDir, withIntermediateDirectories: true)
+            self.logFileURL = logsDir.appendingPathComponent("\(smbConfig.connectionID).log")
+        } else {
+            self.logFileURL = nil
+        }
+
         let rootInode = SMBAttributeMapping.inodeForPath("")
         self.rootItem = PassthroughFSItem(name: ".", smbPath: "", type: .directory, openFlags: .readOnly, inode: rootInode)
         self.itemCache = [:]
         self.itemCacheQueue = DispatchQueue(label: "com.apple.fskit.passthroughfs.itemcache.queue")
         super.init(volumeID: FSVolume.Identifier(uuid: PassthroughFSVolume.defaultVolumeUUID), volumeName: volumeName)
         Logger.passthroughfs.info("\(#function): Created SMB volume \(self.name)")
+        self.log("Volume initialized: \(smbConfig.displayName)")
 
         self.sleepWakeMonitor = SleepWakeMonitor { [weak self] in
             self?.handleSystemDidWake()
         }
         self.networkMonitor = SystemNetworkMonitor { [weak self] in
             self?.reconnectAndClearCaches(reason: "network change")
+        }
+    }
+
+    // MARK: - File Logging
+
+    /// Write a timestamped log entry to the shared log file for this connection.
+    func log(_ message: String) {
+        let timestamp: String = {
+            var now = timespec()
+            clock_gettime(CLOCK_REALTIME, &now)
+            let sec = now.tv_sec
+            let nsec = now.tv_nsec
+            let df = DateFormatter()
+            df.dateFormat = "yyyy-MM-dd HH:mm:ss.SSS"
+            return df.string(from: Date(timeIntervalSince1970: TimeInterval(sec) + TimeInterval(nsec) / 1_000_000_000))
+        }()
+
+        let line = "[\(timestamp)] [FSVolume] \(message)\n"
+        Logger.passthroughfs.info("\(message)")
+
+        guard let logURL = logFileURL else { return }
+        logQueue.async {
+            if let handle = try? FileHandle(forWritingTo: logURL) {
+                handle.seekToEndOfFile()
+                if let data = line.data(using: .utf8) {
+                    handle.write(data)
+                }
+                try? handle.close()
+            } else {
+                try? line.write(to: logURL, atomically: true, encoding: .utf8)
+            }
         }
     }
 
@@ -116,8 +171,10 @@ class PassthroughFSVolume: FSVolume,
             } catch {
                 if !recoveredOnce, self.recoverFromConnectionLoss(error) {
                     recoveredOnce = true
+                    self.log("Read recovered after reconnect: \(ptItem.smbPath)")
                     continue
                 }
+                self.log("Read failed: \(ptItem.smbPath) error=\(error)")
                 Logger.passthroughfs.error("\(#function): read \(ptItem.smbPath) failed: \(error)")
                 return replyHandler(0, error)
             }
@@ -204,9 +261,14 @@ class PassthroughFSVolume: FSVolume,
     func recoverFromConnectionLoss(_ error: Error, reopening item: PassthroughFSItem? = nil,
                                    mode: PassthroughFSItemOpenMode = .readOnly) -> Bool {
         guard self.isConnectionLost(error) else { return false }
+        self.log("Connection lost: \(error.localizedDescription) - attempting reconnect...")
         reconnectLock.lock()
         defer { reconnectLock.unlock() }
-        guard self.smb.reconnect() else { return false }
+        guard self.smb.reconnect() else {
+            self.log("Reconnect FAILED")
+            return false
+        }
+        self.log("Reconnect succeeded, clearing caches")
 
         self.clearAllDirectoryCaches()
 
@@ -215,6 +277,7 @@ class PassthroughFSVolume: FSVolume,
             try item.forceReopen(mode: mode)
         } catch {
             Logger.passthroughfs.error("\(#function): Failed to reopen \(item.name): \(error)")
+            self.log("Failed to reopen \(item.name): \(error)")
             return false
         }
         return true

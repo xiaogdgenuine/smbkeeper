@@ -84,16 +84,21 @@ extension PassthroughFSVolume: FSVolume.Operations {
 
     public func deactivate(options: FSDeactivateOptions = [],
                            replyHandler: @escaping ((any Error)?) -> Void) {
+        self.log("Deactivate: disconnecting SMB")
         self.smb.disconnect()
+        self.log("Deactivate complete")
         replyHandler(nil)
     }
 
     public func mount(options: FSTaskOptions, replyHandler: @escaping (Error?) -> Void) {
+        self.log("Mount completed")
         replyHandler(nil)
     }
 
     public func unmount(replyHandler: @escaping () -> Void) {
+        self.log("Unmount initiated")
         self.smb.disconnect()
+        self.log("Unmount completed, SMB disconnected")
         replyHandler()
     }
 

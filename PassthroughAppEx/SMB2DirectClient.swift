@@ -16,19 +16,23 @@ final class SMB2DirectClient: @unchecked Sendable {
     private let queue = DispatchQueue(label: "com.apple.fskit.passthroughfs.libsmb2.queue")
     private let connectionLock = NSLock()
     private var isConnected = false
+    private let config: SMBConfiguration
 
-    init() throws {
+    init(config: SMBConfiguration) throws {
+        self.config = config
         try self.queue.sync {
             try self.connectOnQueue()
         }
         self.isConnected = true
-        Logger.passthroughfs.info("libsmb2 connected to \(SMBConfiguration.shareName) at \(SMBConfiguration.serverURL)")
+        Logger.passthroughfs.info("libsmb2 connected to \(config.shareName) at \(config.serverURL)")
     }
 
     func disconnect() {
         connectionLock.lock()
         defer { connectionLock.unlock() }
         guard isConnected else { return }
+        let config = self.config
+        Logger.passthroughfs.info("libsmb2 disconnecting from \(config.shareName)")
         queue.sync {
             guard let ctx = self.context else { return }
             smb2_disconnect_share(ctx)
@@ -42,6 +46,8 @@ final class SMB2DirectClient: @unchecked Sendable {
     func reconnect() -> Bool {
         connectionLock.lock()
         defer { connectionLock.unlock() }
+        let config = self.config
+        Logger.passthroughfs.info("libsmb2 reconnecting to \(config.serverURL)/\(config.shareName)")
         do {
             try queue.sync {
                 if let ctx = self.context {
@@ -52,6 +58,7 @@ final class SMB2DirectClient: @unchecked Sendable {
                 try self.connectOnQueue()
             }
             isConnected = true
+            Logger.passthroughfs.info("libsmb2 reconnect succeeded")
             return true
         } catch {
             Logger.passthroughfs.error("libsmb2 reconnect failed: \(error)")
@@ -250,24 +257,27 @@ final class SMB2DirectClient: @unchecked Sendable {
 
     private func connectOnQueue() throws {
         guard let ctx = smb2_init_context() else {
+            Logger.passthroughfs.error("libsmb2 init_context failed")
             throw POSIXError(.ENOMEM)
         }
-        if SMBConfiguration.operationTimeout > 0 {
-            smb2_set_timeout(ctx, Int32(SMBConfiguration.operationTimeout))
+        let config = self.config
+        Logger.passthroughfs.info("libsmb2 connecting to \(config.serverURL)/\(config.shareName) as \(config.username)")
+        if config.operationTimeout > 0 {
+            smb2_set_timeout(ctx, Int32(config.operationTimeout))
         }
         smb2_set_security_mode(ctx, UInt16(SMB2_NEGOTIATE_SIGNING_ENABLED))
         smb2_set_authentication(ctx, Int32(SMB2_SEC_NTLMSSP.rawValue))
 
-        let user = SMBConfiguration.username
+        let user = config.username
         user.withCString { smb2_set_user(ctx, $0) }
-        if SMBConfiguration.password.isEmpty {
+        if config.password.isEmpty {
             smb2_set_password(ctx, nil)
         } else {
-            SMBConfiguration.password.withCString { smb2_set_password(ctx, $0) }
+            config.password.withCString { smb2_set_password(ctx, $0) }
         }
 
-        let server = SMB2LibSupport.serverAddress(from: SMBConfiguration.serverURL)
-        let share = SMBConfiguration.shareName
+        let server = SMB2LibSupport.serverAddress(from: config.serverURL)
+        let share = config.shareName
         let result = server.withCString { serverPtr in
             share.withCString { sharePtr in
                 user.withCString { userPtr in
@@ -276,9 +286,12 @@ final class SMB2DirectClient: @unchecked Sendable {
             }
         }
         if result < 0 {
+            let error = SMB2LibSupport.posixError(fromContext: ctx, code: result)
+            Logger.passthroughfs.error("libsmb2 connect failed: \(error)")
             smb2_destroy_context(ctx)
-            throw SMB2LibSupport.posixError(fromContext: ctx, code: result)
+            throw error
         }
+        Logger.passthroughfs.info("libsmb2 connected successfully")
         self.context = ctx
     }
 

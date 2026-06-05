@@ -11,6 +11,7 @@ import FSKit
 import IOKit
 import IOKit.pwr_mgt
 import OSLog
+import SystemConfiguration
 
 let maxSymlinkSize: Int = 4096
 let modeAllBits: Int32 = 0o7777
@@ -40,6 +41,7 @@ class PassthroughFSVolume: FSVolume,
     let volumeLabel: String
 
     private var sleepWakeMonitor: SleepWakeMonitor?
+    private var networkMonitor: SystemNetworkMonitor?
     private let wakeQueue = DispatchQueue(label: "com.apple.fskit.passthroughfs.wake.queue")
     private let reconnectLock = NSLock()
 
@@ -55,6 +57,9 @@ class PassthroughFSVolume: FSVolume,
 
         self.sleepWakeMonitor = SleepWakeMonitor { [weak self] in
             self?.handleSystemDidWake()
+        }
+        self.networkMonitor = SystemNetworkMonitor { [weak self] in
+            self?.reconnectAndClearCaches(reason: "network change")
         }
     }
 
@@ -259,25 +264,136 @@ class PassthroughFSVolume: FSVolume,
         return item
     }
 
-    private func handleSystemDidWake(attempt: Int = 0) {
+    private func handleSystemDidWake() {
+        self.reconnectAndClearCaches(reason: "wake")
+    }
+
+    /// Rebuilds the SMB connection and clears stale caches, retrying with backoff on failure.
+    private func reconnectAndClearCaches(reason: String, attempt: Int = 0) {
         reconnectLock.lock()
         let ok = self.smb.reconnect()
         reconnectLock.unlock()
 
         if ok {
             self.clearAllDirectoryCaches()
-            Logger.passthroughfs.info("\(#function): Reconnected SMB after wake (attempt \(attempt))")
+            Logger.passthroughfs.info("\(#function): Reconnected SMB after \(reason) (attempt \(attempt))")
             return
         }
 
         let maxAttempts = 5
         guard attempt < maxAttempts else {
-            Logger.passthroughfs.error("\(#function): Couldn't reconnect SMB after wake")
+            Logger.passthroughfs.error("\(#function): Couldn't reconnect SMB after \(reason)")
             return
         }
         let delay = DispatchTimeInterval.seconds(attempt + 1)
         wakeQueue.asyncAfter(deadline: .now() + delay) { [weak self] in
-            self?.handleSystemDidWake(attempt: attempt + 1)
+            self?.reconnectAndClearCaches(reason: reason, attempt: attempt + 1)
+        }
+    }
+}
+
+private func systemNetworkStoreCallback(
+    store: SCDynamicStore?,
+    changedKeys: CFArray?,
+    info: UnsafeMutableRawPointer?
+) {
+    guard let info else { return }
+    Unmanaged<SystemNetworkMonitor>.fromOpaque(info).takeUnretainedValue().handleStoreChange()
+}
+
+/// Fires `onChange` whenever the active network changes (Wi-Fi switch, new IP, etc.).
+///
+/// Watches the primary IPv4 route and per-interface Wi-Fi association via
+/// ``SCDynamicStore``, which reacts promptly even when switching between Wi-Fi
+/// networks on the same interface. We don't try to classify "connected" vs.
+/// "disconnected" — any change just triggers a reconnect + cache refresh.
+final class SystemNetworkMonitor {
+    private var store: SCDynamicStore?
+    private let queue = DispatchQueue(label: "com.apple.fskit.passthroughfs.network.queue")
+    private let onChange: () -> Void
+    private var lastSnapshot: String?
+
+    init(onChange: @escaping () -> Void) {
+        self.onChange = onChange
+        self.queue.async { [weak self] in
+            self?.startOnQueue()
+        }
+    }
+
+    private func startOnQueue() {
+        var context = SCDynamicStoreContext(
+            version: 0,
+            info: Unmanaged.passUnretained(self).toOpaque(),
+            retain: nil,
+            release: nil,
+            copyDescription: nil
+        )
+
+        guard let store = SCDynamicStoreCreate(
+            nil,
+            "com.apple.fskit.passthroughfs.network" as CFString,
+            systemNetworkStoreCallback,
+            &context
+        ) else {
+            Logger.passthroughfs.error("\(#function): SCDynamicStoreCreate failed")
+            return
+        }
+        self.store = store
+
+        let keys = ["State:/Network/Global/IPv4"] as CFArray
+        let patterns = [
+            "State:/Network/Interface/.*/IPv4",
+            "State:/Network/Interface/.*/AirPort",
+        ] as CFArray
+        SCDynamicStoreSetNotificationKeys(store, keys, patterns)
+        self.lastSnapshot = Self.captureSnapshot(from: store)
+
+        guard let source = SCDynamicStoreCreateRunLoopSource(nil, store, 0) else {
+            Logger.passthroughfs.error("\(#function): SCDynamicStoreCreateRunLoopSource failed")
+            return
+        }
+        CFRunLoopAddSource(CFRunLoopGetCurrent(), source, .defaultMode)
+        Logger.passthroughfs.info("\(#function): System network monitor active (SCDynamicStore)")
+        CFRunLoopRun()
+    }
+
+    fileprivate func handleStoreChange() {
+        guard let store else { return }
+        let snapshot = Self.captureSnapshot(from: store)
+        defer { self.lastSnapshot = snapshot }
+        guard self.lastSnapshot != snapshot else { return }
+        Logger.passthroughfs.info("\(#function): Network configuration changed")
+        self.onChange()
+    }
+
+    private static func captureSnapshot(from store: SCDynamicStore) -> String {
+        var parts: [String] = []
+
+        if let global = SCDynamicStoreCopyValue(store, "State:/Network/Global/IPv4" as CFString) as? [String: Any] {
+            parts.append("pri=\(global["PrimaryInterface"] ?? "")")
+            parts.append("router=\(global["Router"] ?? "")")
+        }
+
+        if let keys = SCDynamicStoreCopyKeyList(store, "State:/Network/Interface/.*/IPv4" as CFString) as? [String] {
+            for key in keys.sorted() {
+                guard let ipv4 = SCDynamicStoreCopyValue(store, key as CFString) as? [String: Any] else { continue }
+                parts.append("\(key)=\(ipv4["Addresses"] ?? "")")
+            }
+        }
+
+        if let keys = SCDynamicStoreCopyKeyList(store, "State:/Network/Interface/.*/AirPort" as CFString) as? [String] {
+            for key in keys.sorted() {
+                guard let airport = SCDynamicStoreCopyValue(store, key as CFString) as? [String: Any] else { continue }
+                parts.append("\(key)=\(airport["SSID"] ?? "")/\(airport["BSSID"] ?? "")")
+            }
+        }
+
+        return parts.joined(separator: "|")
+    }
+
+    deinit {
+        self.queue.async {
+            CFRunLoopStop(CFRunLoopGetCurrent())
         }
     }
 }

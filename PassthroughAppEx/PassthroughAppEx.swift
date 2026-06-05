@@ -14,6 +14,15 @@ struct PassthroughAppEx: UnaryFileSystemExtension {
 
     typealias FileSystem = FSUnaryFileSystem & FSUnaryFileSystemOperations
 
+    init() {
+        // libsmb2 writes directly to the TCP socket. If the SMB connection drops
+        // and we then write to the dead socket, the kernel raises SIGPIPE, whose
+        // default action kills this extension process (exit code 13, no crash report),
+        // which in turn makes FSKit force-unmount the volume. Ignore it so the failing
+        // call returns EPIPE instead, letting our connection-loss/reconnect logic run.
+        signal(SIGPIPE, SIG_IGN)
+    }
+
     var fileSystem: FSUnaryFileSystem & FSUnaryFileSystemOperations {
         PassthroughFileSystem()
     }

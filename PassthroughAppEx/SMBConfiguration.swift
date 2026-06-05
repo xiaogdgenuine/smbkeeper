@@ -15,13 +15,13 @@ enum SMBConfiguration {
     static let serverURL = URL(string: "smb://192.168.1.4")!
 
     /// Share name on the server (not a subfolder path).
-    static let shareName = "6T"
+    static let shareName = "2T"
 
     static let username = "test"
     static let password = "1Ailovetest"
 
     /// Display name suffix for the FSKit volume.
-    static let volumeNameSuffix = "_smbfs"
+    static let volumeNameSuffix = "_可达增强版"
 
     static var credential: URLCredential {
         URLCredential(user: username, password: password, persistence: .forSession)

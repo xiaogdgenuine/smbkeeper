@@ -9,7 +9,7 @@
 /* Begin PBXBuildFile section */
 		D3BA958B2D9D753400FAF4A2 /* PassthroughAppEx.appex in Embed ExtensionKit Extensions */ = {isa = PBXBuildFile; fileRef = D3BA95812D9D753400FAF4A2 /* PassthroughAppEx.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		D3BA95932D9D754E00FAF4A2 /* FSKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = D3BA95922D9D754E00FAF4A2 /* FSKit.framework */; };
-		SMB2PKG00012D9D760000FAF4A2 /* AMSMB2 in Frameworks */ = {isa = PBXBuildFile; productRef = SMB2PKG00022D9D760000FAF4A2 /* AMSMB2 */; };
+		SMB2PKG00012D9D760000FAF4A2 /* libsmb2 in Frameworks */ = {isa = PBXBuildFile; productRef = SMB2PKG00022D9D760000FAF4A2 /* libsmb2 */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -83,7 +83,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				SMB2PKG00012D9D760000FAF4A2 /* AMSMB2 in Frameworks */,
+				SMB2PKG00012D9D760000FAF4A2 /* libsmb2 in Frameworks */,
 				D3BA95932D9D754E00FAF4A2 /* FSKit.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -180,7 +180,7 @@
 			);
 			name = PassthroughAppEx;
 			packageProductDependencies = (
-				SMB2PKG00022D9D760000FAF4A2 /* AMSMB2 */,
+				SMB2PKG00022D9D760000FAF4A2 /* libsmb2 */,
 			);
 			productName = appex;
 			productReference = D3BA95812D9D753400FAF4A2 /* PassthroughAppEx.appex */;
@@ -213,10 +213,10 @@
 				Base,
 			);
 			mainGroup = D3BA95652D9D74FC00FAF4A2;
-			preferredProjectObjectVersion = 77;
 			packageReferences = (
-				SMB2PKG00032D9D760000FAF4A2 /* XCLocalSwiftPackageReference "AMSMB2" */,
+				SMB2PKG00032D9D760000FAF4A2 /* XCLocalSwiftPackageReference ".deps/AMSMB2" */,
 			);
+			preferredProjectObjectVersion = 77;
 			productRefGroup = D3BA956F2D9D74FC00FAF4A2 /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
@@ -545,17 +545,17 @@
 /* End XCConfigurationList section */
 
 /* Begin XCLocalSwiftPackageReference section */
-		SMB2PKG00032D9D760000FAF4A2 /* XCLocalSwiftPackageReference "AMSMB2" */ = {
+		SMB2PKG00032D9D760000FAF4A2 /* XCLocalSwiftPackageReference ".deps/AMSMB2" */ = {
 			isa = XCLocalSwiftPackageReference;
 			relativePath = .deps/AMSMB2;
 		};
 /* End XCLocalSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
-		SMB2PKG00022D9D760000FAF4A2 /* AMSMB2 */ = {
+		SMB2PKG00022D9D760000FAF4A2 /* libsmb2 */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = SMB2PKG00032D9D760000FAF4A2 /* XCLocalSwiftPackageReference "AMSMB2" */;
-			productName = AMSMB2;
+			package = SMB2PKG00032D9D760000FAF4A2 /* XCLocalSwiftPackageReference ".deps/AMSMB2" */;
+			productName = libsmb2;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

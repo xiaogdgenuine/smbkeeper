@@ -9,7 +9,7 @@ import Foundation
 import FSKit
 
 extension Logger {
-    static let passthroughfs = Logger(subsystem: "com.apple.fskit.PassthroughFS", category: "default")
+    static let smbkeepfs = Logger(subsystem: "com.apple.fskit.SMBKeepFS", category: "default")
 }
 
 /// Returns the current `errno` value as a `POSIXError`.
@@ -22,7 +22,7 @@ func throwErrno<T: SignedInteger>(_ block: () throws -> T) throws -> T {
     let ret = try block()
     guard ret >= 0 else {
         guard errno != 0 else {
-            Logger.passthroughfs.error("Call to block failed, and errno is not set")
+            Logger.smbkeepfs.error("Call to block failed, and errno is not set")
             return ret
         }
         throw posixErrno
@@ -47,14 +47,14 @@ func createVolumeNameFromSMB() -> FSFileName {
 
 /// A file system that exposes an SMB share through FSKit.
 @objc
-class PassthroughFileSystem: FSUnaryFileSystem & FSUnaryFileSystemOperations {
+class SMBKeepFileSystem: FSUnaryFileSystem & FSUnaryFileSystemOperations {
 
-    var loadedVolume: PassthroughFSVolume?
+    var loadedVolume: SMBKeepFSVolume?
     let smbConfig: SMBConfiguration
 
     public override init() {
         self.smbConfig = currentSMBConfig()
-        Logger.passthroughfs.debug("\(#function): init with config \(self.smbConfig.displayName)")
+        Logger.smbkeepfs.debug("\(#function): init with config \(self.smbConfig.displayName)")
         super.init()
     }
 
@@ -71,7 +71,7 @@ class PassthroughFileSystem: FSUnaryFileSystem & FSUnaryFileSystemOperations {
             // Initialize the SMB backend with the config from shared container
             let backend = try SMBBackend(config: smbConfig)
             let volumeName = FSFileName(string: smbConfig.displayName + smbConfig.volumeNameSuffix)
-            let volume = try PassthroughFSVolume(backend: backend,
+            let volume = try SMBKeepFSVolume(backend: backend,
                                                   volumeName: volumeName,
                                                   smbConfig: smbConfig)
             self.containerStatus = .ready
@@ -82,7 +82,7 @@ class PassthroughFileSystem: FSUnaryFileSystem & FSUnaryFileSystemOperations {
 
             return replyHandler(volume, nil)
         } catch {
-            Logger.passthroughfs.error("\(#function): SMB setup failed: \(error)")
+            Logger.smbkeepfs.error("\(#function): SMB setup failed: \(error)")
             return replyHandler(nil, error)
         }
     }

@@ -15,11 +15,19 @@ class MountManager: ObservableObject {
     @Published var lastError: String?
     @Published var mountOutput: String = ""
 
-    private let logger = Logger(subsystem: "com.example.passthrough.mount", category: "MountManager")
+    private let logger = Logger(subsystem: "com.example.smbkeep.mount", category: "MountManager")
     private let manager: SMBConnectionManager
-
     init(manager: SMBConnectionManager) {
         self.manager = manager
+    }
+
+    private func mountPoint(for connection: SMBConnection) -> URL {
+        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        let bundleID = Bundle.main.bundleIdentifier ?? "com.example.smbkeep"
+        let appDir = appSupport.appendingPathComponent(bundleID)
+        let mountDir = appDir.appendingPathComponent(connection.displayName.trimmingCharacters(in: .whitespaces))
+        try? FileManager.default.createDirectory(at: mountDir, withIntermediateDirectories: true)
+        return mountDir
     }
 
     /// Mount an SMB share.
@@ -43,9 +51,10 @@ class MountManager: ObservableObject {
             return false
         }
 
-        // Build the mount command.
-        // FSKit extension mount: use mount_fskit or the newer fsutil.
-        let mountPoint = "/Volumes/\(connection.displayName.trimmingCharacters(in: .whitespaces))"
+        let mountPoint = mountPoint(for: connection).path
+
+        // Register the extension before mounting to avoid extensionKit error 2.
+        await registerExtension()
 
         // Try multiple approaches to mount.
         let result = await runMountCommand(extBundleID: extBundleID, mountPoint: mountPoint, connection: connection)
@@ -66,7 +75,7 @@ class MountManager: ObservableObject {
         isBusy = true
         lastError = nil
 
-        let mountPoint = "/Volumes/\(connection.displayName.trimmingCharacters(in: .whitespaces))"
+        let mountPoint = mountPoint(for: connection).path
 
         let result = await runUnmountCommand(mountPoint: mountPoint, connection: connection)
 
@@ -87,27 +96,34 @@ class MountManager: ObservableObject {
         return mainBundleID + ".AppEx"
     }
 
+    private func registerExtension() async {
+        guard let extBundleID = Bundle.main.object(forInfoDictionaryKey: "EXTENSION_BUNDLE_ID") as? String
+                ?? guessExtensionBundleID() else {
+            return
+        }
+        // Disable and re-enable to force fskitd to release stale state.
+        _ = await runShellCommand("pluginkit -e ignore -i \"\(extBundleID)\" 2>&1")
+        let enableOutput = await runShellCommand("pluginkit -e use -i \"\(extBundleID)\" 2>&1")
+        mountOutput += "=== pluginkit refresh ===\n\(enableOutput)\n"
+    }
+
     private func runMountCommand(extBundleID: String, mountPoint: String, connection: SMBConnection) async -> Bool {
-        // FSKit extensions use the mount command with the FSShortName "passthrough"
+        // FSKit extensions use the mount command with the FSShortName "smbkeep"
         // from the extension's Info.plist.
         let displayName = connection.displayName.trimmingCharacters(in: .whitespaces)
-        let shareName = connection.shareName.trimmingCharacters(in: .whitespaces)
-
-        // Create the mount point directory
-        _ = await runShellCommand("mkdir -p \"\(mountPoint)\"")
 
         let commands: [(title: String, command: String)] = [
-            // Try 1: mount with short name "passthrough" (from Info.plist FSShortName)
-            ("mount -t passthrough",
-             "mount -t passthrough \"\(shareName)\" \"\(mountPoint)\""),
+            // Try 1: mount with short name "smbkeep" (from Info.plist FSShortName)
+            ("mount -t smbkeep",
+             "mount -t smbkeep none \"\(mountPoint)\""),
 
             // Try 2: With explicit extension option
-            ("mount -t passthrough (extension)",
-             "mount -t passthrough -o extension=\(extBundleID) \"\(shareName)\" \"\(mountPoint)\""),
+            ("mount -t smbkeep (extension)",
+             "mount -t smbkeep -o extension=\(extBundleID) none \"\(mountPoint)\""),
 
             // Try 3: activate extension first then mount
             ("systemextensionsctl + mount",
-             "systemextensionsctl developer on 2>/dev/null; mount -t passthrough \"\(shareName)\" \"\(mountPoint)\" 2>&1"),
+             "systemextensionsctl developer on 2>/dev/null; mount -t smbkeep none \"\(mountPoint)\" 2>&1"),
         ]
 
         for (name, cmd) in commands {
@@ -132,19 +148,43 @@ class MountManager: ObservableObject {
             }
         }
 
-        let helpMsg = """
-            所有自动挂载方法均失败。
+        if mountOutput.contains("extensionKit.errorDomain") {
+            // fskitd is holding stale state. Restart it via admin auth prompt,
+            // then retry the mount once.
+            let killed = await runShellCommand("osascript -e 'do shell script \"killall fskitd\" with administrator privileges' 2>&1")
+            mountOutput += "=== fskitd restart ===\n\(killed)\n\n"
+            if !killed.lowercased().contains("error") {
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                for (name, cmd) in commands {
+                    logger.info("Retrying \(name) after fskitd restart...")
+                    let retryOutput = await runShellCommand(cmd)
+                    mountOutput += "=== retry: \(name) ===\n\(retryOutput)\n\n"
+                    let retryCheck = await runShellCommand("mount | grep \"\(displayName)\"")
+                    if !retryCheck.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        return true
+                    }
+                }
+            }
+            lastError = """
+                fskitd 重启后仍挂载失败。
 
-            请确保：
-            1. 系统扩展已被批准：打开「系统设置 → 隐私与安全性」，查看是否有关于 "Passthrough" 扩展的批准提示
-            2. 尝试手动挂载：
-               mount -t passthrough "\(shareName)" "\(mountPoint)"
-            3. 或使用 diskutil 挂载：
-               diskutil apfs mount -mountPoint "\(mountPoint)" <disk-id>
+                挂载点: \(mountPoint)
+                扩展 Bundle ID: \(extBundleID)
+                """
+        } else {
+            lastError = """
+                所有自动挂载方法均失败。
 
-            扩展 Bundle ID: \(extBundleID)
-            """
-        lastError = helpMsg
+                请确保：
+                1. 系统扩展已被批准：打开「系统设置 → 隐私与安全性」
+                2. 尝试手动挂载：
+                   mount -t smbkeep none "\(mountPoint)"
+                3. 检查系统扩展是否已启用：
+                   systemextensionsctl list
+
+                扩展 Bundle ID: \(extBundleID)
+                """
+        }
         return false
     }
 

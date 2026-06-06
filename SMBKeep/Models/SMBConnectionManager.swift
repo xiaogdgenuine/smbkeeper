@@ -14,7 +14,7 @@ class SMBConnectionManager: ObservableObject {
     @Published var connections: [SMBConnection] = []
     @Published var activeVolumeUUIDs: Set<UUID> = []
 
-    private let logger = Logger(subsystem: "com.example.passthrough.manager", category: "SMBConnectionManager")
+    private let logger = Logger(subsystem: "com.example.smbkeep.manager", category: "SMBConnectionManager")
 
     static let connectionsFileName = "smb_connections.json"
     static let activeMountsFileName = "active_mounts.json"

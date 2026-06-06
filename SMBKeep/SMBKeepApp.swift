@@ -8,7 +8,7 @@ The app's top-level SwiftUI body.
 import SwiftUI
 
 @main
-struct PassthroughApp: App {
+struct SMBKeepApp: App {
     @StateObject private var connectionManager: SMBConnectionManager
     @StateObject private var mountManager: MountManager
 

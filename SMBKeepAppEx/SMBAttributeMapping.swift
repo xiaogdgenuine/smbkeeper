@@ -108,9 +108,9 @@ enum SMBAttributeMapping {
     }
 
     static func rawAttributes(from attributes: [URLResourceKey: any Sendable],
-                              path: String) -> PassthroughRawAttributes {
+                              path: String) -> SMBKeepRawAttributes {
         let itemType = itemType(from: attributes)
-        var raw = PassthroughRawAttributes()
+        var raw = SMBKeepRawAttributes()
         raw.ownerID = 501
         raw.groupID = 20
         raw.accessMask = defaultMode(for: itemType)

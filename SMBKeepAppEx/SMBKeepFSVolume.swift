@@ -16,8 +16,8 @@ import SystemConfiguration
 let maxSymlinkSize: Int = 4096
 let modeAllBits: Int32 = 0o7777
 
-/// A PassthroughFSVolume represents a volume backed by an SMB share.
-class PassthroughFSVolume: FSVolume,
+/// A SMBKeepFSVolume represents a volume backed by an SMB share.
+class SMBKeepFSVolume: FSVolume,
                            FSVolume.ReadWriteOperations,
                            FSVolume.RenameOperations,
                            FSVolume.PreallocateOperations,
@@ -25,16 +25,16 @@ class PassthroughFSVolume: FSVolume,
 
     static let defaultVolumeUUID = UUID()
 
-    var rootItem: PassthroughFSItem
-    var itemCache: [UInt64: PassthroughFSItem]
+    var rootItem: SMBKeepFSItem
+    var itemCache: [UInt64: SMBKeepFSItem]
     var itemCacheQueue: DispatchQueue
 
-    var enumerationCache: [UInt64: PassthroughDirectorySnapshot] = [:]
+    var enumerationCache: [UInt64: SMBKeepDirectorySnapshot] = [:]
     var enumerationCacheGeneration: UInt64 = 0
     let enumerationCacheLock = NSLock()
 
     /// Name → item for children last enumerated under a directory inode (avoids N stat RPCs after readdir).
-    var directoryLookupCache: [UInt64: [String: PassthroughFSItem]] = [:]
+    var directoryLookupCache: [UInt64: [String: SMBKeepFSItem]] = [:]
     let directoryLookupCacheLock = NSLock()
 
     let smb: SMBBackend
@@ -45,13 +45,13 @@ class PassthroughFSVolume: FSVolume,
     let smbConfig: SMBConfiguration
 
     /// File logger for writing runtime logs to the shared container.
-    private let logQueue = DispatchQueue(label: "com.apple.fskit.passthroughfs.log.queue",
+    private let logQueue = DispatchQueue(label: "com.apple.fskit.smbkeepfs.log.queue",
                                          qos: .background)
     private let logFileURL: URL?
 
     private var sleepWakeMonitor: SleepWakeMonitor?
     private var networkMonitor: SystemNetworkMonitor?
-    private let wakeQueue = DispatchQueue(label: "com.apple.fskit.passthroughfs.wake.queue")
+    private let wakeQueue = DispatchQueue(label: "com.apple.fskit.smbkeepfs.wake.queue")
     private let reconnectLock = NSLock()
 
     init(backend: SMBBackend, volumeName: FSFileName, smbConfig: SMBConfiguration) throws {
@@ -61,7 +61,7 @@ class PassthroughFSVolume: FSVolume,
         self.volumeLabel = volumeName.string ?? smbConfig.displayName
 
         // Set up log file in the shared App Group container
-        let appGroupID = "group.com.example.apple-samplecode.Passthrough"
+        let appGroupID = "xiaogd.com.SMBKeep"
         if let containerURL = FileManager.default
             .containerURL(forSecurityApplicationGroupIdentifier: appGroupID) {
             let logsDir = containerURL.appendingPathComponent("logs", isDirectory: true)
@@ -72,11 +72,11 @@ class PassthroughFSVolume: FSVolume,
         }
 
         let rootInode = SMBAttributeMapping.inodeForPath("")
-        self.rootItem = PassthroughFSItem(name: ".", smbPath: "", type: .directory, openFlags: .readOnly, inode: rootInode)
+        self.rootItem = SMBKeepFSItem(name: ".", smbPath: "", type: .directory, openFlags: .readOnly, inode: rootInode)
         self.itemCache = [:]
-        self.itemCacheQueue = DispatchQueue(label: "com.apple.fskit.passthroughfs.itemcache.queue")
-        super.init(volumeID: FSVolume.Identifier(uuid: PassthroughFSVolume.defaultVolumeUUID), volumeName: volumeName)
-        Logger.passthroughfs.info("\(#function): Created SMB volume \(self.name)")
+        self.itemCacheQueue = DispatchQueue(label: "com.apple.fskit.smbkeepfs.itemcache.queue")
+        super.init(volumeID: FSVolume.Identifier(uuid: SMBKeepFSVolume.defaultVolumeUUID), volumeName: volumeName)
+        Logger.smbkeepfs.info("\(#function): Created SMB volume \(self.name)")
         self.log("Volume initialized: \(smbConfig.displayName)")
 
         self.sleepWakeMonitor = SleepWakeMonitor { [weak self] in
@@ -102,7 +102,7 @@ class PassthroughFSVolume: FSVolume,
         }()
 
         let line = "[\(timestamp)] [FSVolume] \(message)\n"
-        Logger.passthroughfs.info("\(message)")
+        Logger.smbkeepfs.info("\(message)")
 
         guard let logURL = logFileURL else { return }
         logQueue.async {
@@ -127,7 +127,7 @@ class PassthroughFSVolume: FSVolume,
                                  length: Int,
                                  flags: FSVolume.PreallocateFlags,
                                  replyHandler: @escaping (Int, (any Error)?) -> Void) {
-        guard let ptItem = item as? PassthroughFSItem else {
+        guard let ptItem = item as? SMBKeepFSItem else {
             return replyHandler(0, POSIXError(.EINVAL))
         }
         guard ptItem.itemType == .file else {
@@ -155,7 +155,7 @@ class PassthroughFSVolume: FSVolume,
                      length: Int,
                      into buffer: FSMutableFileDataBuffer,
                      replyHandler: @escaping (Int, Error?) -> Void) {
-        guard let ptItem = item as? PassthroughFSItem else {
+        guard let ptItem = item as? SMBKeepFSItem else {
             return replyHandler(0, POSIXError(.EINVAL))
         }
 
@@ -175,7 +175,7 @@ class PassthroughFSVolume: FSVolume,
                     continue
                 }
                 self.log("Read failed: \(ptItem.smbPath) error=\(error)")
-                Logger.passthroughfs.error("\(#function): read \(ptItem.smbPath) failed: \(error)")
+                Logger.smbkeepfs.error("\(#function): read \(ptItem.smbPath) failed: \(error)")
                 return replyHandler(0, error)
             }
         }
@@ -185,7 +185,7 @@ class PassthroughFSVolume: FSVolume,
                       to item: FSItem,
                       at offset: off_t,
                       replyHandler: @escaping (Int, (any Error)?) -> Void) {
-        guard let ptItem = item as? PassthroughFSItem else {
+        guard let ptItem = item as? SMBKeepFSItem else {
             return replyHandler(0, POSIXError(.EINVAL))
         }
         guard ptItem.itemType != .directory else {
@@ -210,14 +210,14 @@ class PassthroughFSVolume: FSVolume,
     public func openItem(_ item: FSItem,
                          modes: FSVolume.OpenModes,
                          replyHandler: @escaping ((any Error)?) -> Void) {
-        guard let ptItem = item as? PassthroughFSItem else {
+        guard let ptItem = item as? SMBKeepFSItem else {
             return replyHandler(POSIXError(.EINVAL))
         }
         guard ptItem != self.rootItem else {
             return replyHandler(nil)
         }
 
-        var ptfsMode: PassthroughFSItemOpenMode = .readOnly
+        var ptfsMode: SMBKeepFSItemOpenMode = .readOnly
         if modes.contains(.write) {
             ptfsMode = .readWrite
         }
@@ -232,7 +232,7 @@ class PassthroughFSVolume: FSVolume,
     public func closeItem(_ item: FSItem,
                           modes: FSVolume.OpenModes,
                           replyHandler: @escaping ((any Error)?) -> Void) {
-        guard let ptItem = item as? PassthroughFSItem else {
+        guard let ptItem = item as? SMBKeepFSItem else {
             return replyHandler(POSIXError(.EINVAL))
         }
         guard ptItem != self.rootItem else {
@@ -258,8 +258,8 @@ class PassthroughFSVolume: FSVolume,
     }
 
     @discardableResult
-    func recoverFromConnectionLoss(_ error: Error, reopening item: PassthroughFSItem? = nil,
-                                   mode: PassthroughFSItemOpenMode = .readOnly) -> Bool {
+    func recoverFromConnectionLoss(_ error: Error, reopening item: SMBKeepFSItem? = nil,
+                                   mode: SMBKeepFSItemOpenMode = .readOnly) -> Bool {
         guard self.isConnectionLost(error) else { return false }
         self.log("Connection lost: \(error.localizedDescription) - attempting reconnect...")
         reconnectLock.lock()
@@ -276,7 +276,7 @@ class PassthroughFSVolume: FSVolume,
         do {
             try item.forceReopen(mode: mode)
         } catch {
-            Logger.passthroughfs.error("\(#function): Failed to reopen \(item.name): \(error)")
+            Logger.smbkeepfs.error("\(#function): Failed to reopen \(item.name): \(error)")
             self.log("Failed to reopen \(item.name): \(error)")
             return false
         }
@@ -303,13 +303,13 @@ class PassthroughFSVolume: FSVolume,
     }
 
     /// Registers enumerated children so subsequent `lookupItem` calls avoid extra SMB round trips.
-    func registerEnumeratedChildren(_ entries: [PassthroughDirEntry], in parent: PassthroughFSItem) {
-        var byName: [String: PassthroughFSItem] = [:]
+    func registerEnumeratedChildren(_ entries: [SMBKeepDirEntry], in parent: SMBKeepFSItem) {
+        var byName: [String: SMBKeepFSItem] = [:]
         byName.reserveCapacity(entries.count)
         self.itemCacheQueue.sync {
             for entry in entries {
                 let childPath = parent.smbPath.appendingSMBComponent(entry.name)
-                let item = PassthroughFSItem(name: entry.name, parent: parent, smbPath: childPath,
+                let item = SMBKeepFSItem(name: entry.name, parent: parent, smbPath: childPath,
                                              type: entry.itemType, inode: entry.itemID, cachedRaw: entry.raw)
                 byName[entry.name] = item
                 self.itemCache[entry.itemID] = item
@@ -320,7 +320,7 @@ class PassthroughFSVolume: FSVolume,
         self.directoryLookupCacheLock.unlock()
     }
 
-    func cachedChild(named name: String, in parent: PassthroughFSItem) -> PassthroughFSItem? {
+    func cachedChild(named name: String, in parent: SMBKeepFSItem) -> SMBKeepFSItem? {
         self.directoryLookupCacheLock.lock()
         let item = self.directoryLookupCache[parent.inode]?[name]
         self.directoryLookupCacheLock.unlock()
@@ -339,13 +339,13 @@ class PassthroughFSVolume: FSVolume,
 
         if ok {
             self.clearAllDirectoryCaches()
-            Logger.passthroughfs.info("\(#function): Reconnected SMB after \(reason) (attempt \(attempt))")
+            Logger.smbkeepfs.info("\(#function): Reconnected SMB after \(reason) (attempt \(attempt))")
             return
         }
 
         let maxAttempts = 5
         guard attempt < maxAttempts else {
-            Logger.passthroughfs.error("\(#function): Couldn't reconnect SMB after \(reason)")
+            Logger.smbkeepfs.error("\(#function): Couldn't reconnect SMB after \(reason)")
             return
         }
         let delay = DispatchTimeInterval.seconds(attempt + 1)
@@ -372,7 +372,7 @@ private func systemNetworkStoreCallback(
 /// "disconnected" — any change just triggers a reconnect + cache refresh.
 final class SystemNetworkMonitor {
     private var store: SCDynamicStore?
-    private let queue = DispatchQueue(label: "com.apple.fskit.passthroughfs.network.queue")
+    private let queue = DispatchQueue(label: "com.apple.fskit.smbkeepfs.network.queue")
     private let onChange: () -> Void
     private var lastSnapshot: String?
 
@@ -394,11 +394,11 @@ final class SystemNetworkMonitor {
 
         guard let store = SCDynamicStoreCreate(
             nil,
-            "com.apple.fskit.passthroughfs.network" as CFString,
+            "com.apple.fskit.smbkeepfs.network" as CFString,
             systemNetworkStoreCallback,
             &context
         ) else {
-            Logger.passthroughfs.error("\(#function): SCDynamicStoreCreate failed")
+            Logger.smbkeepfs.error("\(#function): SCDynamicStoreCreate failed")
             return
         }
         self.store = store
@@ -412,11 +412,11 @@ final class SystemNetworkMonitor {
         self.lastSnapshot = Self.captureSnapshot(from: store)
 
         guard let source = SCDynamicStoreCreateRunLoopSource(nil, store, 0) else {
-            Logger.passthroughfs.error("\(#function): SCDynamicStoreCreateRunLoopSource failed")
+            Logger.smbkeepfs.error("\(#function): SCDynamicStoreCreateRunLoopSource failed")
             return
         }
         CFRunLoopAddSource(CFRunLoopGetCurrent(), source, .defaultMode)
-        Logger.passthroughfs.info("\(#function): System network monitor active (SCDynamicStore)")
+        Logger.smbkeepfs.info("\(#function): System network monitor active (SCDynamicStore)")
         CFRunLoopRun()
     }
 
@@ -425,7 +425,7 @@ final class SystemNetworkMonitor {
         let snapshot = Self.captureSnapshot(from: store)
         defer { self.lastSnapshot = snapshot }
         guard self.lastSnapshot != snapshot else { return }
-        Logger.passthroughfs.info("\(#function): Network configuration changed")
+        Logger.smbkeepfs.info("\(#function): Network configuration changed")
         self.onChange()
     }
 
@@ -468,7 +468,7 @@ final class SleepWakeMonitor {
     private static let messageSystemHasPoweredOn: UInt32 = 0xE000_0300
 
     private let onWake: () -> Void
-    private let queue = DispatchQueue(label: "com.apple.fskit.passthroughfs.sleepwake.queue")
+    private let queue = DispatchQueue(label: "com.apple.fskit.smbkeepfs.sleepwake.queue")
     private var rootPort: io_connect_t = 0
     private var notifierObject: io_object_t = 0
     private var notificationPort: IONotificationPortRef?
@@ -485,14 +485,14 @@ final class SleepWakeMonitor {
         }, &notifier)
 
         guard connect != 0, let port else {
-            Logger.passthroughfs.error("\(#function): IORegisterForSystemPower failed")
+            Logger.smbkeepfs.error("\(#function): IORegisterForSystemPower failed")
             return nil
         }
         self.rootPort = connect
         self.notifierObject = notifier
         self.notificationPort = port
         IONotificationPortSetDispatchQueue(port, self.queue)
-        Logger.passthroughfs.info("\(#function): Sleep/wake monitor active")
+        Logger.smbkeepfs.info("\(#function): Sleep/wake monitor active")
     }
 
     private func handle(messageType: UInt32, messageArgument: UnsafeMutableRawPointer?) {

@@ -32,16 +32,16 @@ struct SMBConfiguration {
 
     /// Load configuration from the shared App Group container.
     static func loadFromSharedContainer() -> SMBConfiguration {
-        let appGroupID = "group.com.example.apple-samplecode.Passthrough"
+        let appGroupID = "xiaogd.com.SMBKeep"
         guard let containerURL = FileManager.default
             .containerURL(forSecurityApplicationGroupIdentifier: appGroupID) else {
-            Logger.passthroughfs.warning("No shared container, using defaults")
+            Logger.smbkeepfs.warning("No shared container, using defaults")
             return defaultConfig
         }
 
         let configURL = containerURL.appendingPathComponent("active_config.json")
         guard let data = try? Data(contentsOf: configURL) else {
-            Logger.passthroughfs.warning("No active_config.json, using defaults")
+            Logger.smbkeepfs.warning("No active_config.json, using defaults")
             return defaultConfig
         }
 
@@ -59,10 +59,10 @@ struct SMBConfiguration {
                 connectionID: json["connectionID"] ?? UUID().uuidString,
                 displayName: json["displayName"] ?? json["shareName"] ?? "SMB Share"
             )
-            Logger.passthroughfs.info("Loaded config for \(config.displayName) (\(config.serverURL)/\(config.shareName))")
+            Logger.smbkeepfs.info("Loaded config for \(config.displayName) (\(config.serverURL)/\(config.shareName))")
             return config
         } catch {
-            Logger.passthroughfs.error("Failed to parse config: \(error)")
+            Logger.smbkeepfs.error("Failed to parse config: \(error)")
             return defaultConfig
         }
     }

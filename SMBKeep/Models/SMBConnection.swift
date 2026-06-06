@@ -40,5 +40,5 @@ struct SMBConnection: Identifiable, Codable, Equatable, Hashable {
         "\(displayServer)/\(displayShare) (\(username))"
     }
 
-    static let appGroupIdentifier = "group.com.example.apple-samplecode.Passthrough"
+    static let appGroupIdentifier = "xiaogd.com.SMBKeep"
 }

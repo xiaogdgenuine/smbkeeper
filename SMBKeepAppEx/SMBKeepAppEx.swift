@@ -10,7 +10,7 @@ import Foundation
 import FSKit
 
 @main
-struct PassthroughAppEx: UnaryFileSystemExtension {
+struct SMBKeepAppEx: UnaryFileSystemExtension {
 
     typealias FileSystem = FSUnaryFileSystem & FSUnaryFileSystemOperations
 
@@ -24,6 +24,6 @@ struct PassthroughAppEx: UnaryFileSystemExtension {
     }
 
     var fileSystem: FSUnaryFileSystem & FSUnaryFileSystemOperations {
-        PassthroughFileSystem()
+        SMBKeepFileSystem()
     }
 }

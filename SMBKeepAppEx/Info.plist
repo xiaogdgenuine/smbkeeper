@@ -28,7 +28,7 @@
 		<key>FSRequiresSecurityScopedPathURLResources</key>
 		<false/>
 		<key>FSShortName</key>
-		<string>passthrough</string>
+		<string>smbkeep</string>
 		<key>FSSupportsBlockResources</key>
 		<false/>
 		<key>FSSupportsPathURLs</key>

@@ -13,7 +13,7 @@ import OSLog
 final class SMB2DirectClient: @unchecked Sendable {
 
     private var context: UnsafeMutablePointer<smb2_context>?
-    private let queue = DispatchQueue(label: "com.apple.fskit.passthroughfs.libsmb2.queue")
+    private let queue = DispatchQueue(label: "com.apple.fskit.smbkeepfs.libsmb2.queue")
     private let connectionLock = NSLock()
     private var isConnected = false
     private let config: SMBConfiguration
@@ -24,7 +24,7 @@ final class SMB2DirectClient: @unchecked Sendable {
             try self.connectOnQueue()
         }
         self.isConnected = true
-        Logger.passthroughfs.info("libsmb2 connected to \(config.shareName) at \(config.serverURL)")
+        Logger.smbkeepfs.info("libsmb2 connected to \(config.shareName) at \(config.serverURL)")
     }
 
     func disconnect() {
@@ -32,7 +32,7 @@ final class SMB2DirectClient: @unchecked Sendable {
         defer { connectionLock.unlock() }
         guard isConnected else { return }
         let config = self.config
-        Logger.passthroughfs.info("libsmb2 disconnecting from \(config.shareName)")
+        Logger.smbkeepfs.info("libsmb2 disconnecting from \(config.shareName)")
         queue.sync {
             guard let ctx = self.context else { return }
             smb2_disconnect_share(ctx)
@@ -47,7 +47,7 @@ final class SMB2DirectClient: @unchecked Sendable {
         connectionLock.lock()
         defer { connectionLock.unlock() }
         let config = self.config
-        Logger.passthroughfs.info("libsmb2 reconnecting to \(config.serverURL)/\(config.shareName)")
+        Logger.smbkeepfs.info("libsmb2 reconnecting to \(config.serverURL)/\(config.shareName)")
         do {
             try queue.sync {
                 if let ctx = self.context {
@@ -58,10 +58,10 @@ final class SMB2DirectClient: @unchecked Sendable {
                 try self.connectOnQueue()
             }
             isConnected = true
-            Logger.passthroughfs.info("libsmb2 reconnect succeeded")
+            Logger.smbkeepfs.info("libsmb2 reconnect succeeded")
             return true
         } catch {
-            Logger.passthroughfs.error("libsmb2 reconnect failed: \(error)")
+            Logger.smbkeepfs.error("libsmb2 reconnect failed: \(error)")
             isConnected = false
             return false
         }
@@ -257,11 +257,11 @@ final class SMB2DirectClient: @unchecked Sendable {
 
     private func connectOnQueue() throws {
         guard let ctx = smb2_init_context() else {
-            Logger.passthroughfs.error("libsmb2 init_context failed")
+            Logger.smbkeepfs.error("libsmb2 init_context failed")
             throw POSIXError(.ENOMEM)
         }
         let config = self.config
-        Logger.passthroughfs.info("libsmb2 connecting to \(config.serverURL)/\(config.shareName) as \(config.username)")
+        Logger.smbkeepfs.info("libsmb2 connecting to \(config.serverURL)/\(config.shareName) as \(config.username)")
         if config.operationTimeout > 0 {
             smb2_set_timeout(ctx, Int32(config.operationTimeout))
         }
@@ -287,11 +287,11 @@ final class SMB2DirectClient: @unchecked Sendable {
         }
         if result < 0 {
             let error = SMB2LibSupport.posixError(fromContext: ctx, code: result)
-            Logger.passthroughfs.error("libsmb2 connect failed: \(error)")
+            Logger.smbkeepfs.error("libsmb2 connect failed: \(error)")
             smb2_destroy_context(ctx)
             throw error
         }
-        Logger.passthroughfs.info("libsmb2 connected successfully")
+        Logger.smbkeepfs.info("libsmb2 connected successfully")
         self.context = ctx
     }
 

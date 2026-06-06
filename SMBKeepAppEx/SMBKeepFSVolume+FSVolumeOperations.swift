@@ -10,7 +10,7 @@ import ExtensionFoundation
 import FSKit
 import OSLog
 
-struct PassthroughRawAttributes {
+struct SMBKeepRawAttributes {
     var ownerID: uid_t = 0
     var groupID: gid_t = 0
     var accessMask: UInt32 = 0
@@ -29,27 +29,27 @@ struct PassthroughRawAttributes {
     var linkCount: UInt32 = 1
 }
 
-struct PassthroughDirEntry {
+struct SMBKeepDirEntry {
     let name: String
     let itemType: FSItem.ItemType
     let itemID: UInt64
-    let raw: PassthroughRawAttributes
+    let raw: SMBKeepRawAttributes
 }
 
-final class PassthroughDirectorySnapshot {
+final class SMBKeepDirectorySnapshot {
     let verifier: UInt64
-    let entries: [PassthroughDirEntry]
+    let entries: [SMBKeepDirEntry]
 
-    init(verifier: UInt64, entries: [PassthroughDirEntry]) {
+    init(verifier: UInt64, entries: [SMBKeepDirEntry]) {
         self.verifier = verifier
         self.entries = entries
     }
 }
 
-extension PassthroughFSVolume: FSVolume.Operations {
+extension SMBKeepFSVolume: FSVolume.Operations {
 
     public var volumeStatistics: FSStatFSResult {
-        let res = FSStatFSResult(fileSystemTypeName: String("smbpassthroughfs"))
+        let res = FSStatFSResult(fileSystemTypeName: String("smbsmbkeepfs"))
         do {
             let fsAttrs = try self.smb.attributesOfFileSystem(forPath: "")
             if let blockSize = fsAttrs[.systemSize] as? NSNumber {
@@ -72,7 +72,7 @@ extension PassthroughFSVolume: FSVolume.Operations {
                 res.freeFiles = freeNodes.uint64Value
             }
         } catch {
-            Logger.passthroughfs.debug("\(#function): statvfs unavailable (\(error))")
+            Logger.smbkeepfs.debug("\(#function): statvfs unavailable (\(error))")
         }
         return res
     }
@@ -109,7 +109,7 @@ extension PassthroughFSVolume: FSVolume.Operations {
     public func getAttributes(_ desiredAttributes: FSItem.GetAttributesRequest,
                               of item: FSItem,
                               replyHandler: @escaping (FSItem.Attributes?, Error?) -> Void) {
-        guard let ptItem = item as? PassthroughFSItem else {
+        guard let ptItem = item as? SMBKeepFSItem else {
             return replyHandler(nil, POSIXError(.EINVAL))
         }
         do {
@@ -127,7 +127,7 @@ extension PassthroughFSVolume: FSVolume.Operations {
     }
 
     private func fetchAttributes(_ desiredAttributes: FSItem.GetAttributesRequest,
-                                 of ptItem: PassthroughFSItem) throws -> FSItem.Attributes {
+                                 of ptItem: SMBKeepFSItem) throws -> FSItem.Attributes {
         let parentInode = ptItem.parent?.inode ?? ptItem.inode
         if let raw = ptItem.cachedRaw {
             return self.projectAttributes(raw, itemType: ptItem.itemType,
@@ -145,7 +145,7 @@ extension PassthroughFSVolume: FSVolume.Operations {
                               on item: FSItem,
                               creatingNewFile: Bool,
                               replyHandler: @escaping (FSItem.Attributes?, Error?) -> Void) {
-        guard let ptItem = item as? PassthroughFSItem else {
+        guard let ptItem = item as? SMBKeepFSItem else {
             return replyHandler(nil, POSIXError(.EINVAL))
         }
 
@@ -203,7 +203,7 @@ extension PassthroughFSVolume: FSVolume.Operations {
     public func lookupItem(named name: FSFileName,
                            inDirectory directory: FSItem,
                            replyHandler: @escaping (FSItem?, FSFileName?, Error?) -> Void) {
-        guard let dirItem = directory as? PassthroughFSItem else {
+        guard let dirItem = directory as? SMBKeepFSItem else {
             return replyHandler(nil, nil, POSIXError(.EINVAL))
         }
         guard let nameString = name.string else {
@@ -220,7 +220,7 @@ extension PassthroughFSVolume: FSVolume.Operations {
             do {
                 let attrs = try self.smb.attributesOfItem(atPath: childPath)
                 let inode = SMBAttributeMapping.inode(from: attrs, fallbackPath: childPath)
-                var cached: PassthroughFSItem?
+                var cached: SMBKeepFSItem?
                 self.itemCacheQueue.sync {
                     cached = self.itemCache[inode]
                 }
@@ -230,7 +230,7 @@ extension PassthroughFSVolume: FSVolume.Operations {
 
                 let type = SMBAttributeMapping.itemType(from: attrs)
                 let raw = SMBAttributeMapping.rawAttributes(from: attrs, path: childPath)
-                let newItem = PassthroughFSItem(name: nameString, parent: dirItem, smbPath: childPath,
+                let newItem = SMBKeepFSItem(name: nameString, parent: dirItem, smbPath: childPath,
                                                 type: type, inode: inode, cachedRaw: raw)
                 self.itemCacheQueue.sync {
                     self.itemCache[inode] = newItem
@@ -247,7 +247,7 @@ extension PassthroughFSVolume: FSVolume.Operations {
     }
 
     public func reclaimItem(_ item: FSItem, replyHandler: @escaping (Error?) -> Void) {
-        guard let ptItem = item as? PassthroughFSItem else {
+        guard let ptItem = item as? SMBKeepFSItem else {
             return replyHandler(POSIXError(.EINVAL))
         }
         self.itemCacheQueue.sync {
@@ -260,7 +260,7 @@ extension PassthroughFSVolume: FSVolume.Operations {
 
     public func readSymbolicLink(_ item: FSItem,
                                  replyHandler: @escaping (FSFileName?, Error?) -> Void) {
-        guard let ptItem = item as? PassthroughFSItem else {
+        guard let ptItem = item as? SMBKeepFSItem else {
             return replyHandler(nil, POSIXError(.EINVAL))
         }
         var recoveredOnce = false
@@ -287,7 +287,7 @@ extension PassthroughFSVolume: FSVolume.Operations {
                            inDirectory directory: FSItem,
                            attributes newAttributes: FSItem.SetAttributesRequest,
                            replyHandler: @escaping (FSItem?, FSFileName?, Error?) -> Void) {
-        guard let dirItem = directory as? PassthroughFSItem else {
+        guard let dirItem = directory as? SMBKeepFSItem else {
             return replyHandler(nil, nil, POSIXError(.EINVAL))
         }
         guard let nameString = name.string else {
@@ -310,7 +310,7 @@ extension PassthroughFSVolume: FSVolume.Operations {
                     return replyHandler(nil, nil, POSIXError(.EINVAL))
                 }
 
-                let newItem = try PassthroughFSItem(name: nameString, parent: dirItem, type: type, backend: self.smb)
+                let newItem = try SMBKeepFSItem(name: nameString, parent: dirItem, type: type, backend: self.smb)
                 self.setAttributes(newAttributes, on: newItem, creatingNewFile: true) { attrs, error in
                     guard error == nil else {
                         return replyHandler(nil, nil, error)
@@ -340,7 +340,7 @@ extension PassthroughFSVolume: FSVolume.Operations {
         guard !contents.data.isEmpty else {
             return replyHandler(nil, nil, POSIXError(.EINVAL))
         }
-        guard let dirItem = directory as? PassthroughFSItem else {
+        guard let dirItem = directory as? SMBKeepFSItem else {
             return replyHandler(nil, nil, POSIXError(.EINVAL))
         }
         guard dirItem.itemType == .directory else {
@@ -358,7 +358,7 @@ extension PassthroughFSVolume: FSVolume.Operations {
 
         do {
             try self.smb.createSymbolicLink(atPath: childPath, withDestinationPath: linkTarget)
-            let newItem = try PassthroughFSItem(name: nameString, parent: dirItem, type: .symlink, backend: self.smb)
+            let newItem = try SMBKeepFSItem(name: nameString, parent: dirItem, type: .symlink, backend: self.smb)
             self.setAttributes(newAttributes, on: newItem, creatingNewFile: true) { _, error in
                 guard error == nil else {
                     return replyHandler(nil, nil, error)
@@ -385,10 +385,10 @@ extension PassthroughFSVolume: FSVolume.Operations {
                            named name: FSFileName,
                            fromDirectory directory: FSItem,
                            replyHandler: @escaping (Error?) -> Void) {
-        guard let dirItem = directory as? PassthroughFSItem else {
+        guard let dirItem = directory as? SMBKeepFSItem else {
             return replyHandler(POSIXError(.EINVAL))
         }
-        guard let ptItem = item as? PassthroughFSItem else {
+        guard let ptItem = item as? SMBKeepFSItem else {
             return replyHandler(POSIXError(.EINVAL))
         }
 
@@ -418,9 +418,9 @@ extension PassthroughFSVolume: FSVolume.Operations {
                            inDirectory destinationDirectory: FSItem,
                            overItem: FSItem?,
                            replyHandler: @escaping (FSFileName?, Error?) -> Void) {
-        guard let fromItem = item as? PassthroughFSItem,
-              let fromDir = sourceDirectory as? PassthroughFSItem,
-              let toDir = destinationDirectory as? PassthroughFSItem,
+        guard let fromItem = item as? SMBKeepFSItem,
+              let fromDir = sourceDirectory as? SMBKeepFSItem,
+              let toDir = destinationDirectory as? SMBKeepFSItem,
               let destName = destinationName.string else {
             return replyHandler(nil, POSIXError(.EINVAL))
         }
@@ -441,7 +441,7 @@ extension PassthroughFSVolume: FSVolume.Operations {
                     self.itemCache.removeValue(forKey: fromInode)
                     self.itemCache[fromItem.inode] = fromItem
                 }
-                if let over = overItem as? PassthroughFSItem, over !== fromItem {
+                if let over = overItem as? SMBKeepFSItem, over !== fromItem {
                     self.itemCacheQueue.sync {
                         self.itemCache.removeValue(forKey: over.inode)
                     }
@@ -465,7 +465,7 @@ extension PassthroughFSVolume: FSVolume.Operations {
                                    attributes: FSItem.GetAttributesRequest?,
                                    packer: FSDirectoryEntryPacker,
                                    replyHandler: @escaping (FSDirectoryVerifier, Error?) -> Void) {
-        guard let dirItem = directory as? PassthroughFSItem else {
+        guard let dirItem = directory as? SMBKeepFSItem else {
             return replyHandler(FSDirectoryVerifier(0), POSIXError(.EINVAL))
         }
         guard dirItem.itemType == .directory else {
@@ -504,9 +504,9 @@ extension PassthroughFSVolume: FSVolume.Operations {
         }
     }
 
-    private func directorySnapshot(for dirItem: PassthroughFSItem,
+    private func directorySnapshot(for dirItem: SMBKeepFSItem,
                                    cookie: FSDirectoryCookie,
-                                   verifier: FSDirectoryVerifier) throws -> PassthroughDirectorySnapshot {
+                                   verifier: FSDirectoryVerifier) throws -> SMBKeepDirectorySnapshot {
         self.enumerationCacheLock.lock()
         if let cached = self.enumerationCache[dirItem.inode] {
             let matchesResume = cookie.rawValue != 0 && cached.verifier == verifier.rawValue
@@ -523,7 +523,7 @@ extension PassthroughFSVolume: FSVolume.Operations {
         self.enumerationCacheLock.lock()
         defer { self.enumerationCacheLock.unlock() }
         self.enumerationCacheGeneration += 1
-        let snapshot = PassthroughDirectorySnapshot(verifier: self.enumerationCacheGeneration, entries: entries)
+        let snapshot = SMBKeepDirectorySnapshot(verifier: self.enumerationCacheGeneration, entries: entries)
         if self.enumerationCache.count >= 64 {
             self.enumerationCache.removeAll(keepingCapacity: true)
             self.directoryLookupCacheLock.lock()
@@ -535,9 +535,9 @@ extension PassthroughFSVolume: FSVolume.Operations {
     }
 
     private func snapshotDirectory(atPath path: String,
-                                   parent: PassthroughFSItem) throws -> [PassthroughDirEntry] {
+                                   parent: SMBKeepFSItem) throws -> [SMBKeepDirEntry] {
         let listing = try self.smb.contentsOfDirectory(atPath: path)
-        var entries: [PassthroughDirEntry] = []
+        var entries: [SMBKeepDirEntry] = []
         entries.reserveCapacity(listing.count)
         for attrs in listing {
             guard let name = attrs[.nameKey] as? String else { continue }
@@ -546,13 +546,13 @@ extension PassthroughFSVolume: FSVolume.Operations {
             let type = SMBAttributeMapping.itemType(from: attrs)
             let inode = SMBAttributeMapping.inode(from: attrs, fallbackPath: childPath)
             let raw = SMBAttributeMapping.rawAttributes(from: attrs, path: childPath)
-            entries.append(PassthroughDirEntry(name: name, itemType: type, itemID: inode, raw: raw))
+            entries.append(SMBKeepDirEntry(name: name, itemType: type, itemID: inode, raw: raw))
         }
         self.registerEnumeratedChildren(entries, in: parent)
         return entries
     }
 
-    private func projectAttributes(_ raw: PassthroughRawAttributes,
+    private func projectAttributes(_ raw: SMBKeepRawAttributes,
                                    itemType: FSItem.ItemType,
                                    parentInode: UInt64,
                                    desired: FSItem.GetAttributesRequest) -> FSItem.Attributes {

@@ -11,29 +11,29 @@ import FSKit
 import OSLog
 
 /// Defined item open modes.
-enum PassthroughFSItemOpenMode: Int32 {
+enum SMBKeepFSItemOpenMode: Int32 {
     case close = -1
     case readOnly = 0
     case readWrite = 1
 }
 
-/// A PassthroughFSItem represents a file system item backed by an SMB path.
-class PassthroughFSItem: FSItem {
+/// A SMBKeepFSItem represents a file system item backed by an SMB path.
+class SMBKeepFSItem: FSItem {
 
     var smbPath: String
-    var openMode: PassthroughFSItemOpenMode
-    var parent: PassthroughFSItem?
+    var openMode: SMBKeepFSItemOpenMode
+    var parent: SMBKeepFSItem?
     var name: String
     var itemType: FSItem.ItemType
     var inode: UInt64
     let openModeLock = NSLock()
 
     /// Attributes captured during directory enumeration; avoids per-entry `stat` on lookup/getattr.
-    var cachedRaw: PassthroughRawAttributes?
+    var cachedRaw: SMBKeepRawAttributes?
 
     var fileDescriptor: Int32 { -1 }
 
-    init(name: String, smbPath: String, type: FSItem.ItemType, openFlags: PassthroughFSItemOpenMode, inode: UInt64) {
+    init(name: String, smbPath: String, type: FSItem.ItemType, openFlags: SMBKeepFSItemOpenMode, inode: UInt64) {
         self.name = name
         self.parent = nil
         self.smbPath = smbPath
@@ -44,8 +44,8 @@ class PassthroughFSItem: FSItem {
     }
 
     /// Creates a child item using data already returned by `readdir` / directory listing.
-    init(name: String, parent: PassthroughFSItem, smbPath: String, type: FSItem.ItemType,
-         inode: UInt64, cachedRaw: PassthroughRawAttributes?) {
+    init(name: String, parent: SMBKeepFSItem, smbPath: String, type: FSItem.ItemType,
+         inode: UInt64, cachedRaw: SMBKeepRawAttributes?) {
         self.name = name
         self.parent = parent
         self.openMode = .close
@@ -57,7 +57,7 @@ class PassthroughFSItem: FSItem {
     }
 
     /// Creates a child item after a mutating operation; one `stat` to refresh identity.
-    init(name: String, parent: PassthroughFSItem, type: FSItem.ItemType, backend: SMBBackend) throws {
+    init(name: String, parent: SMBKeepFSItem, type: FSItem.ItemType, backend: SMBBackend) throws {
         self.name = name
         self.parent = parent
         self.openMode = .close
@@ -74,7 +74,7 @@ class PassthroughFSItem: FSItem {
         }
     }
 
-    func upgradeOpenMode(mode: PassthroughFSItemOpenMode) throws {
+    func upgradeOpenMode(mode: SMBKeepFSItemOpenMode) throws {
         if mode == .close {
             throw POSIXError(.EINVAL)
         }
@@ -86,7 +86,7 @@ class PassthroughFSItem: FSItem {
         self.openMode = mode
     }
 
-    func forceReopen(mode: PassthroughFSItemOpenMode) throws {
+    func forceReopen(mode: SMBKeepFSItemOpenMode) throws {
         self.openModeLock.lock()
         self.openMode = .close
         self.openModeLock.unlock()

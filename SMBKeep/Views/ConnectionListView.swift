@@ -229,6 +229,7 @@ struct ConnectionDetailView: View {
                         Text(error)
                             .font(.caption)
                             .foregroundStyle(.red)
+                            .textSelection(.enabled)
                     }
                     .padding()
                     .background(

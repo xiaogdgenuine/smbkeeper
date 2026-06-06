@@ -21,7 +21,8 @@ class SMBKeepFSVolume: FSVolume,
                            FSVolume.ReadWriteOperations,
                            FSVolume.RenameOperations,
                            FSVolume.PreallocateOperations,
-                           FSVolume.OpenCloseOperations {
+                           FSVolume.OpenCloseOperations,
+                           FSVolume.XattrOperations {
 
     static let defaultVolumeUUID = UUID()
 
@@ -252,6 +253,36 @@ class SMBKeepFSVolume: FSVolume,
     public var truncatesLongNames: Bool { false }
     public var maximumFileSizeInBits: Int { 64 }
     public var maximumXattrSizeInBits: Int { 16 }
+
+    // MARK: - FSVolume.XattrOperations
+
+    @objc
+    public func listXattrs(
+        of item: FSItem,
+        replyHandler: @escaping ([FSFileName]?, Error?) -> Void
+    ) {
+        replyHandler([], nil)
+    }
+
+    @objc
+    public func getXattr(
+        named name: FSFileName,
+        of item: FSItem,
+        replyHandler: @escaping (Data?, Error?) -> Void
+    ) {
+        replyHandler(nil, POSIXError(.ENOATTR))
+    }
+
+    @objc
+    public func setXattr(
+        named name: FSFileName,
+        to value: Data?,
+        on item: FSItem,
+        policy: FSVolume.SetXattrPolicy,
+        replyHandler: @escaping (Error?) -> Void
+    ) {
+        replyHandler(POSIXError(.ENOTSUP))
+    }
 
     func isConnectionLost(_ error: Error) -> Bool {
         smb.isConnectionLost(error)

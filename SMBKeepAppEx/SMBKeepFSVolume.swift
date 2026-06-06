@@ -37,6 +37,12 @@ class SMBKeepFSVolume: FSVolume,
     var directoryLookupCache: [UInt64: [String: SMBKeepFSItem]] = [:]
     let directoryLookupCacheLock = NSLock()
 
+    /// How long cached attributes / directory listings stay valid before being
+    /// re-fetched from the server, so external changes become visible. Keeps the
+    /// per-readdir pagination fast while bounding staleness (NFS-style attr cache).
+    let attributeCacheTTL: TimeInterval = 2
+    let directoryCacheTTL: TimeInterval = 2
+
     let smb: SMBBackend
     let volumeLabel: String
     let connectionID: String
@@ -46,7 +52,7 @@ class SMBKeepFSVolume: FSVolume,
 
     /// Local-only store for Finder metadata xattrs (tags, comment, "open with"),
     /// so they never get written back to the remote SMB share.
-    let localXattrStore: SMBKeepLocalXattrStore
+    // let localXattrStore: SMBKeepLocalXattrStore
 
     /// File logger for writing runtime logs to the shared container.
     private let logQueue = DispatchQueue(label: "com.apple.fskit.smbkeepfs.log.queue",
@@ -63,7 +69,7 @@ class SMBKeepFSVolume: FSVolume,
         self.smbConfig = smbConfig
         self.connectionID = smbConfig.connectionID
         self.volumeLabel = volumeName.string ?? smbConfig.displayName
-        self.localXattrStore = SMBKeepLocalXattrStore(connectionID: smbConfig.connectionID)
+        // self.localXattrStore = SMBKeepLocalXattrStore(connectionID: smbConfig.connectionID)
 
         // Set up log file in the shared App Group container
         let appGroupID = "xiaogd.com.SMBKeep"

@@ -30,6 +30,8 @@ class SMBKeepFSItem: FSItem {
 
     /// Attributes captured during directory enumeration; avoids per-entry `stat` on lookup/getattr.
     var cachedRaw: SMBKeepRawAttributes?
+    /// When ``cachedRaw`` was last refreshed; used to expire stale attribute caches.
+    var cachedRawAt: Date?
 
     var fileDescriptor: Int32 { -1 }
 
@@ -53,6 +55,7 @@ class SMBKeepFSItem: FSItem {
         self.itemType = type
         self.inode = inode
         self.cachedRaw = cachedRaw
+        self.cachedRawAt = cachedRaw != nil ? Date() : nil
         super.init()
     }
 
@@ -69,6 +72,7 @@ class SMBKeepFSItem: FSItem {
         let attrs = try backend.attributesOfItem(atPath: self.smbPath)
         self.inode = SMBAttributeMapping.inode(from: attrs, fallbackPath: self.smbPath)
         self.cachedRaw = SMBAttributeMapping.rawAttributes(from: attrs, path: self.smbPath)
+        self.cachedRawAt = Date()
         if let resourceType = attrs[.fileResourceTypeKey] as? URLFileResourceType {
             self.itemType = SMBAttributeMapping.itemType(from: resourceType)
         }
@@ -101,6 +105,13 @@ class SMBKeepFSItem: FSItem {
 
     func clearCachedMetadata() {
         self.cachedRaw = nil
+        self.cachedRawAt = nil
+    }
+
+    /// Whether the cached attributes are still within the given freshness window.
+    func isAttributeCacheValid(ttl: TimeInterval) -> Bool {
+        guard cachedRaw != nil, let at = cachedRawAt else { return false }
+        return Date().timeIntervalSince(at) < ttl
     }
 }
 

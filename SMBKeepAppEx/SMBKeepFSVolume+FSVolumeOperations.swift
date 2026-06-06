@@ -39,10 +39,12 @@ struct SMBKeepDirEntry {
 final class SMBKeepDirectorySnapshot {
     let verifier: UInt64
     let entries: [SMBKeepDirEntry]
+    let createdAt: Date
 
     init(verifier: UInt64, entries: [SMBKeepDirEntry]) {
         self.verifier = verifier
         self.entries = entries
+        self.createdAt = Date()
     }
 }
 
@@ -129,13 +131,14 @@ extension SMBKeepFSVolume: FSVolume.Operations {
     private func fetchAttributes(_ desiredAttributes: FSItem.GetAttributesRequest,
                                  of ptItem: SMBKeepFSItem) throws -> FSItem.Attributes {
         let parentInode = ptItem.parent?.inode ?? ptItem.inode
-        if let raw = ptItem.cachedRaw {
+        if let raw = ptItem.cachedRaw, ptItem.isAttributeCacheValid(ttl: self.attributeCacheTTL) {
             return self.projectAttributes(raw, itemType: ptItem.itemType,
                                           parentInode: parentInode, desired: desiredAttributes)
         }
         let smbAttrs = try self.smb.attributesOfItem(atPath: ptItem.smbPath)
         let type = SMBAttributeMapping.itemType(from: smbAttrs)
         ptItem.cachedRaw = SMBAttributeMapping.rawAttributes(from: smbAttrs, path: ptItem.smbPath)
+        ptItem.cachedRawAt = Date()
         return SMBAttributeMapping.makeAttributes(from: smbAttrs, itemType: type,
                                                   parentInode: parentInode,
                                                   desired: desiredAttributes)
@@ -507,8 +510,12 @@ extension SMBKeepFSVolume: FSVolume.Operations {
                                    verifier: FSDirectoryVerifier) throws -> SMBKeepDirectorySnapshot {
         self.enumerationCacheLock.lock()
         if let cached = self.enumerationCache[dirItem.inode] {
+            // Mid-readdir pagination must stay consistent, so always reuse the
+            // snapshot when resuming. A fresh open only reuses it within the TTL,
+            // otherwise we re-list to pick up external changes.
             let matchesResume = cookie.rawValue != 0 && cached.verifier == verifier.rawValue
-            let matchesFreshOpen = cookie.rawValue == 0 && verifier.rawValue == 0
+            let isFresh = Date().timeIntervalSince(cached.createdAt) < self.directoryCacheTTL
+            let matchesFreshOpen = cookie.rawValue == 0 && verifier.rawValue == 0 && isFresh
             if matchesResume || matchesFreshOpen {
                 self.enumerationCacheLock.unlock()
                 return cached

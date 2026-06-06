@@ -21,8 +21,7 @@ class SMBKeepFSVolume: FSVolume,
                            FSVolume.ReadWriteOperations,
                            FSVolume.RenameOperations,
                            FSVolume.PreallocateOperations,
-                           FSVolume.OpenCloseOperations,
-                           FSVolume.XattrOperations {
+                           FSVolume.OpenCloseOperations {
 
     static let defaultVolumeUUID = UUID()
 
@@ -45,6 +44,10 @@ class SMBKeepFSVolume: FSVolume,
     /// The SMB config used to create this volume.
     let smbConfig: SMBConfiguration
 
+    /// Local-only store for Finder metadata xattrs (tags, comment, "open with"),
+    /// so they never get written back to the remote SMB share.
+    let localXattrStore: SMBKeepLocalXattrStore
+
     /// File logger for writing runtime logs to the shared container.
     private let logQueue = DispatchQueue(label: "com.apple.fskit.smbkeepfs.log.queue",
                                          qos: .background)
@@ -60,6 +63,7 @@ class SMBKeepFSVolume: FSVolume,
         self.smbConfig = smbConfig
         self.connectionID = smbConfig.connectionID
         self.volumeLabel = volumeName.string ?? smbConfig.displayName
+        self.localXattrStore = SMBKeepLocalXattrStore(connectionID: smbConfig.connectionID)
 
         // Set up log file in the shared App Group container
         let appGroupID = "xiaogd.com.SMBKeep"
@@ -253,36 +257,6 @@ class SMBKeepFSVolume: FSVolume,
     public var truncatesLongNames: Bool { false }
     public var maximumFileSizeInBits: Int { 64 }
     public var maximumXattrSizeInBits: Int { 16 }
-
-    // MARK: - FSVolume.XattrOperations
-
-    @objc
-    public func listXattrs(
-        of item: FSItem,
-        replyHandler: @escaping ([FSFileName]?, Error?) -> Void
-    ) {
-        replyHandler([], nil)
-    }
-
-    @objc
-    public func getXattr(
-        named name: FSFileName,
-        of item: FSItem,
-        replyHandler: @escaping (Data?, Error?) -> Void
-    ) {
-        replyHandler(nil, POSIXError(.ENOATTR))
-    }
-
-    @objc
-    public func setXattr(
-        named name: FSFileName,
-        to value: Data?,
-        on item: FSItem,
-        policy: FSVolume.SetXattrPolicy,
-        replyHandler: @escaping (Error?) -> Void
-    ) {
-        replyHandler(POSIXError(.ENOTSUP))
-    }
 
     func isConnectionLost(_ error: Error) -> Bool {
         smb.isConnectionLost(error)

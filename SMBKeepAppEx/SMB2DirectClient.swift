@@ -18,6 +18,12 @@ final class SMB2DirectClient: @unchecked Sendable {
     private var isConnected = false
     private let config: SMBConfiguration
 
+    /// Periodic SMB2 ECHO keepalive so idle connections aren't dropped by the
+    /// server/NAT before the next file operation.
+    private let keepaliveQueue = DispatchQueue(label: "com.apple.fskit.smbkeepfs.keepalive.queue")
+    private let keepaliveInterval: TimeInterval = 30
+    private var keepaliveTimer: DispatchSourceTimer?
+
     init(config: SMBConfiguration) throws {
         self.config = config
         try self.queue.sync {
@@ -25,9 +31,11 @@ final class SMB2DirectClient: @unchecked Sendable {
         }
         self.isConnected = true
         Logger.smbkeepfs.info("libsmb2 connected to \(config.shareName) at \(config.serverURL)")
+        self.startKeepalive()
     }
 
     func disconnect() {
+        self.stopKeepalive()
         connectionLock.lock()
         defer { connectionLock.unlock() }
         guard isConnected else { return }
@@ -40,6 +48,39 @@ final class SMB2DirectClient: @unchecked Sendable {
             self.context = nil
         }
         isConnected = false
+    }
+
+    // MARK: - Keepalive
+
+    private func startKeepalive() {
+        keepaliveQueue.async { [weak self] in
+            guard let self else { return }
+            self.keepaliveTimer?.cancel()
+            let timer = DispatchSource.makeTimerSource(queue: self.keepaliveQueue)
+            timer.schedule(deadline: .now() + self.keepaliveInterval, repeating: self.keepaliveInterval)
+            timer.setEventHandler { [weak self] in self?.sendKeepalive() }
+            self.keepaliveTimer = timer
+            timer.resume()
+        }
+    }
+
+    private func stopKeepalive() {
+        keepaliveQueue.sync {
+            self.keepaliveTimer?.cancel()
+            self.keepaliveTimer = nil
+        }
+    }
+
+    /// Sends one ECHO on the libsmb2 serial queue; reconnects if it fails.
+    /// The reconnect must run outside `queue.sync` to avoid deadlocking the serial queue.
+    private func sendKeepalive() {
+        let ok: Bool = queue.sync {
+            guard let ctx = self.context else { return false }
+            return smb2_echo(ctx) >= 0
+        }
+        guard !ok else { return }
+        Logger.smbkeepfs.info("libsmb2 keepalive echo failed, reconnecting proactively")
+        self.reconnect()
     }
 
     @discardableResult
@@ -78,7 +119,14 @@ final class SMB2DirectClient: @unchecked Sendable {
                 break
             }
         }
-        return false
+        // libsmb2 reports the real cause only in the message string; the numeric
+        // errno is unreliable (e.g. nil-returning opendir/open all map to EPERM).
+        // So also classify connection loss by matching the libsmb2 error text.
+        let message = (error as NSError).localizedDescription.lowercased()
+        let markers = ["pollhup", "socket error", "connection reset", "connection refused",
+                       "broken pipe", "timed out", "timeout", "not connected",
+                       "disconnected", "connection closed", "session setup"]
+        return markers.contains { message.contains($0) }
     }
 
     // MARK: - Metadata

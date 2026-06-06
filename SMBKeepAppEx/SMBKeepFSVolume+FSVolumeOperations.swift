@@ -160,9 +160,7 @@ extension SMBKeepFSVolume: FSVolume.Operations {
             return replyHandler(nil, POSIXError(.EINVAL))
         }
 
-        if newAttributes.isValid(.uid) || newAttributes.isValid(.gid) {
-            return replyHandler(nil, POSIXError(.EPERM))
-        }
+        // Silently accept uid/gid changes; the volume reports current user as owner anyway.
 
         var recoveredOnce = false
         while true {

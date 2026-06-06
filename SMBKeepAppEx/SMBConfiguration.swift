@@ -23,6 +23,8 @@ struct SMBConfiguration {
     let operationTimeout: TimeInterval
     let connectionID: String
     let displayName: String
+    let localUID: uid_t
+    let localGID: gid_t
 
     static let defaultVolumeNameSuffix = "_可达增强版"
 
@@ -57,7 +59,9 @@ struct SMBConfiguration {
                 volumeNameSuffix: defaultVolumeNameSuffix,
                 operationTimeout: TimeInterval(json["operationTimeout"] ?? "120") ?? 120,
                 connectionID: json["connectionID"] ?? UUID().uuidString,
-                displayName: json["displayName"] ?? json["shareName"] ?? "SMB Share"
+                displayName: json["displayName"] ?? json["shareName"] ?? "SMB Share",
+                localUID: uid_t(json["localUID"] ?? "\(getuid())") ?? getuid(),
+                localGID: gid_t(json["localGID"] ?? "\(getgid())") ?? getgid()
             )
             Logger.smbkeepfs.info("Loaded config for \(config.displayName) (\(config.serverURL)/\(config.shareName))")
             return config
@@ -76,7 +80,9 @@ struct SMBConfiguration {
             volumeNameSuffix: defaultVolumeNameSuffix,
             operationTimeout: 120,
             connectionID: UUID().uuidString,
-            displayName: "默认共享"
+            displayName: "默认共享",
+            localUID: getuid(),
+            localGID: getgid()
         )
     }
 }

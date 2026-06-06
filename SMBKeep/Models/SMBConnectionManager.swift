@@ -149,7 +149,9 @@ class SMBConnectionManager: ObservableObject {
             "username": connection.username,
             "password": connection.password,
             "operationTimeout": "\(connection.operationTimeout)",
-            "displayName": connection.displayName
+            "displayName": connection.displayName,
+            "localUID": "\(getuid())",
+            "localGID": "\(getgid())"
         ]
 
         do {

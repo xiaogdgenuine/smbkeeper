@@ -48,17 +48,17 @@ enum SMBAttributeMapping {
     }
 
     static func makeAttributes(from attributes: [URLResourceKey: any Sendable],
-                               itemType: FSItem.ItemType,
-                               parentInode: UInt64,
-                               desired: FSItem.GetAttributesRequest) -> FSItem.Attributes {
+                                itemType: FSItem.ItemType,
+                                parentInode: UInt64,
+                                desired: FSItem.GetAttributesRequest) -> FSItem.Attributes {
         let attrs = FSItem.Attributes()
         let path = (attributes[.pathKey] as? String) ?? ""
 
         if desired.isAttributeWanted(.uid) {
-            attrs.uid = 501
+            attrs.uid = currentUserUID()
         }
         if desired.isAttributeWanted(.gid) {
-            attrs.gid = 20
+            attrs.gid = currentUserGID()
         }
         if desired.isAttributeWanted(.mode) {
             attrs.mode = defaultMode(for: itemType)
@@ -111,8 +111,8 @@ enum SMBAttributeMapping {
                               path: String) -> SMBKeepRawAttributes {
         let itemType = itemType(from: attributes)
         var raw = SMBKeepRawAttributes()
-        raw.ownerID = 501
-        raw.groupID = 20
+        raw.ownerID = currentUserUID()
+        raw.groupID = currentUserGID()
         raw.accessMask = defaultMode(for: itemType)
         raw.fileID = inode(from: attributes, fallbackPath: path)
         raw.linkCount = (attributes[.linkCountKey] as? NSNumber)?.uint32Value ?? 1
@@ -151,6 +151,14 @@ enum SMBAttributeMapping {
             }
         }
         return result
+    }
+
+    private static func currentUserUID() -> uid_t {
+        getuid()
+    }
+
+    private static func currentUserGID() -> gid_t {
+        getgid()
     }
 
     private static func defaultMode(for type: FSItem.ItemType) -> UInt32 {

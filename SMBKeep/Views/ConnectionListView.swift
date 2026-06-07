@@ -22,7 +22,8 @@ struct ConnectionListView: View {
             detailContent
         }
         .sheet(isPresented: $showingAddSheet) {
-            ConnectionEditView(connection: .constant(nil)) { newConn in
+            ConnectionEditView(connection: .constant(nil),
+                               existingConnections: connectionManager.connections) { newConn in
                 connectionManager.addConnection(newConn)
             }
         }
@@ -111,8 +112,6 @@ struct ConnectionDetailView: View {
     @EnvironmentObject var mountManager: MountManager
     let connection: SMBConnection
     @State private var showingEditSheet = false
-    @State private var selectedTab = 0
-
     private var liveConnection: SMBConnection {
         connectionManager.connections.first(where: { $0.id == connection.id }) ?? connection
     }
@@ -125,28 +124,12 @@ struct ConnectionDetailView: View {
 
             Divider()
 
-            Picker("", selection: $selectedTab) {
-                Text("信息").tag(0)
-                Text("日志").tag(1)
-            }
-            .pickerStyle(.segmented)
-            .padding(.horizontal)
-            .padding(.top, 8)
-
-            Group {
-                switch selectedTab {
-                case 0:
-                    infoTab
-                case 1:
-                    LogViewer(connectionID: liveConnection.id)
-                default:
-                    EmptyView()
-                }
-            }
-            .frame(maxHeight: .infinity)
+            infoTab
+                .frame(maxHeight: .infinity)
         }
         .sheet(isPresented: $showingEditSheet) {
-            ConnectionEditView(connection: .constant(liveConnection)) { updatedConn in
+            ConnectionEditView(connection: .constant(liveConnection),
+                               existingConnections: connectionManager.connections) { updatedConn in
                 connectionManager.updateConnection(updatedConn)
             }
         }

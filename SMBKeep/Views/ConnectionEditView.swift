@@ -9,41 +9,68 @@ import SwiftUI
 
 struct ConnectionEditView: View {
     @Binding var connection: SMBConnection?
+    let existingConnections: [SMBConnection]
     let onSave: (SMBConnection) -> Void
     @Environment(\.dismiss) private var dismiss
 
-    @State private var displayName: String = ""
-    @State private var serverURL: String = "smb://"
-    @State private var shareName: String = ""
+    @State private var connectionPath: String = "192.168.1."
     @State private var username: String = ""
     @State private var password: String = ""
     @State private var operationTimeout: Double = 120
 
     private var isEditing: Bool { connection != nil }
 
+    private var parsedServer: String {
+        let components = connectionPath.split(separator: "/", maxSplits: 1)
+        guard let first = components.first else { return "" }
+        return String(first).trimmingCharacters(in: .whitespaces)
+    }
+
+    private var parsedShare: String {
+        let components = connectionPath.split(separator: "/", maxSplits: 1)
+        if components.count > 1 {
+            let s = String(components[1]).trimmingCharacters(in: .whitespaces)
+            if !s.isEmpty { return s }
+        }
+        return parsedServer
+    }
+
+    private var autoDisplayName: String {
+        parsedShare
+    }
+
+    private var deduplicatedDisplayName: String {
+        let name = autoDisplayName
+        guard !name.isEmpty else { return "" }
+        let existingNames = existingConnections
+            .filter { isEditing ? $0.id != connection?.id : true }
+            .map { $0.displayName }
+        if !existingNames.contains(name) { return name }
+        var i = 2
+        while existingNames.contains("\(name) \(i)") { i += 1 }
+        return "\(name) \(i)"
+    }
+
     var body: some View {
         NavigationStack {
             Form {
-                Section("基本信息") {
-                    TextField("显示名称", text: $displayName)
-                        .help("例如：我的共享文件夹")
+                Section("连接信息") {
+                    TextField("服务器地址/共享名", text: $connectionPath)
+                        .help("例如：192.168.1.4/Root")
 
-                    HStack {
-                        TextField("服务器地址", text: $serverURL)
-                            .help("例如：smb://192.168.1.100")
-                        Button("清除") {
-                            serverURL = "smb://"
+                    if !autoDisplayName.isEmpty {
+                        HStack {
+                            Text("名称")
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            Text(deduplicatedDisplayName)
                         }
-                        .buttonStyle(.borderless)
-                        .foregroundStyle(.secondary)
+                        .font(.callout)
                     }
-
-                    TextField("共享名称", text: $shareName)
-                        .help("SMB 服务器上的共享名")
                 }
 
-                Section("认证信息") {
-                    TextField("用户名", text: $username)
+                Section("认证信息（可选）") {
+                    TextField("用户名（留空则匿名访问）", text: $username)
                     SecureField("密码", text: $password)
                 }
 
@@ -55,12 +82,6 @@ struct ConnectionEditView: View {
                         }
                         Slider(value: $operationTimeout, in: 10...300, step: 10)
                     }
-                }
-
-                Section {
-                    Text("挂载时密码会临时写入一个仅本人可读(0600)的配置文件供扩展读取，挂载成功后立即删除。连接列表保存在仅本人可访问(700)的容器中。")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
                 }
             }
             .formStyle(.grouped)
@@ -78,31 +99,30 @@ struct ConnectionEditView: View {
             }
             .onAppear {
                 if let conn = connection {
-                    displayName = conn.displayName
-                    serverURL = conn.serverURL
-                    shareName = conn.shareName
+                    if conn.shareName == conn.serverURL {
+                        connectionPath = conn.serverURL
+                    } else {
+                        connectionPath = "\(conn.serverURL)/\(conn.shareName)"
+                    }
                     username = conn.username
                     password = conn.password
                     operationTimeout = conn.operationTimeout
                 }
             }
         }
-        .frame(minWidth: 420, minHeight: 380)
+        .frame(minWidth: 420, minHeight: 300)
     }
 
     private var isValid: Bool {
-        !displayName.trimmingCharacters(in: .whitespaces).isEmpty &&
-        !serverURL.trimmingCharacters(in: .whitespaces).isEmpty &&
-        !shareName.trimmingCharacters(in: .whitespaces).isEmpty &&
-        !username.trimmingCharacters(in: .whitespaces).isEmpty
+        !parsedServer.isEmpty
     }
 
     private func save() {
         let conn = SMBConnection(
             id: connection?.id ?? UUID(),
-            displayName: displayName.trimmingCharacters(in: .whitespaces),
-            serverURL: serverURL.trimmingCharacters(in: .whitespaces),
-            shareName: shareName.trimmingCharacters(in: .whitespaces),
+            displayName: deduplicatedDisplayName,
+            serverURL: parsedServer,
+            shareName: parsedShare,
             username: username.trimmingCharacters(in: .whitespaces),
             password: password,
             mountPath: connection?.mountPath ?? "",

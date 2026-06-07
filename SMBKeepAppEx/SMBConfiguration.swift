@@ -33,7 +33,7 @@ struct SMBConfiguration {
     let localUID: uid_t
     let localGID: gid_t
 
-    static let defaultVolumeNameSuffix = "_可达增强版"
+    static let defaultVolumeNameSuffix = "_skp"
 
     var credential: URLCredential {
         URLCredential(user: username, password: password, persistence: .forSession)

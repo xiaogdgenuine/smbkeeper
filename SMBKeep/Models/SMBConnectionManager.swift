@@ -46,18 +46,6 @@ class SMBConnectionManager: ObservableObject {
             connections = decoded
             logger.info("Loaded \(decoded.count) connection(s)")
         } catch {
-            // No saved configs yet — start with a default from existing hardcoded config.
-            if connections.isEmpty {
-                connections = [
-                    SMBConnection(
-                        displayName: "默认共享",
-                        serverURL: "smb://192.168.1.4",
-                        shareName: "2T",
-                        username: "test",
-                        password: "1Ailovetest"
-                    )
-                ]
-            }
             logger.debug("No saved connections, using defaults")
         }
     }

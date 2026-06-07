@@ -31,10 +31,6 @@ class SMBConnectionManager: ObservableObject {
         sharedContainerURL?.appendingPathComponent(Self.activeMountsFileName)
     }
 
-    var logsDirectoryURL: URL? {
-        sharedContainerURL?.appendingPathComponent("logs", isDirectory: true)
-    }
-
     init() {
         loadConnections()
         loadActiveMounts()
@@ -135,12 +131,38 @@ class SMBConnectionManager: ObservableObject {
         }
     }
 
-    /// Get the active connection config for the extension to read.
-    /// Writes a single "active.json" that the extension picks up on loadResource.
-    func writeActiveConfig(for connectionID: UUID) -> Bool {
+    // MARK: - Mount Source Config
+
+    /// File name the extension reads inside the mount source directory.
+    static let mountConfigFileName = "mount-config.json"
+
+    /// Base directory (app-owned) that holds one subdirectory per connection.
+    /// Each subdirectory is used as the `mount` *source* argument; FSKit delivers
+    /// it to the extension as a security-scoped `FSPathURLResource`.
+    ///
+    /// The App Group container is intentionally NOT used here: FSKit extension
+    /// sandboxes don't expose it, so the extension can't read config from there.
+    private var mountSourcesBaseURL: URL? {
+        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+        let bundleID = Bundle.main.bundleIdentifier ?? "com.example.smbkeep"
+        return appSupport?
+            .appendingPathComponent(bundleID)
+            .appendingPathComponent("mount-sources")
+    }
+
+    /// The per-connection mount source directory.
+    func mountSourceDirectory(for connectionID: UUID) -> URL? {
+        mountSourcesBaseURL?.appendingPathComponent(connectionID.uuidString)
+    }
+
+    /// Write the connection's config into its own mount source directory and
+    /// return that directory, to be passed as the `mount` source argument.
+    /// Each connection gets a distinct directory, so simultaneous mounts of
+    /// different connections never overwrite each other's config.
+    func writeMountConfig(for connectionID: UUID) -> URL? {
         guard let connection = connections.first(where: { $0.id == connectionID }),
-              let configURL = sharedContainerURL?.appendingPathComponent("active_config.json")
-        else { return false }
+              let sourceDir = mountSourceDirectory(for: connectionID)
+        else { return nil }
 
         let config: [String: String] = [
             "connectionID": connection.id.uuidString,
@@ -155,35 +177,45 @@ class SMBConnectionManager: ObservableObject {
         ]
 
         do {
+            let fm = FileManager.default
+            // Lock down the base and per-connection directories to owner-only (0700).
+            if let baseURL = mountSourcesBaseURL {
+                try fm.createDirectory(at: baseURL, withIntermediateDirectories: true,
+                                       attributes: [.posixPermissions: 0o700])
+                try? fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: baseURL.path)
+            }
+            try fm.createDirectory(at: sourceDir, withIntermediateDirectories: true,
+                                   attributes: [.posixPermissions: 0o700])
+            try? fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: sourceDir.path)
+
+            let configURL = sourceDir.appendingPathComponent(Self.mountConfigFileName)
             let data = try JSONEncoder().encode(config)
             try data.write(to: configURL, options: .atomic)
-            return true
+            // Plaintext credentials live here only during the mount window; make
+            // the file owner read/write only (0600).
+            try? fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: configURL.path)
+            return sourceDir
         } catch {
-            logger.error("Failed to write active config: \(error)")
-            return false
+            logger.error("Failed to write mount config: \(error)")
+            return nil
         }
     }
 
-    /// Clear the active config (used on unmount).
-    func clearActiveConfig() {
-        guard let configURL = sharedContainerURL?.appendingPathComponent("active_config.json") else { return }
+    /// Delete just the plaintext `mount-config.json` (keep the source directory
+    /// so the mount's source path stays valid). Call this right after a mount
+    /// succeeds: the extension has already read the config into memory in
+    /// `loadResource`, so the credentials no longer need to be on disk.
+    func removeMountConfigFile(for connectionID: UUID) {
+        guard let sourceDir = mountSourceDirectory(for: connectionID) else { return }
+        let configURL = sourceDir.appendingPathComponent(Self.mountConfigFileName)
         try? FileManager.default.removeItem(at: configURL)
     }
 
-    // MARK: - Logging Support
-
-    /// Returns the log file URL for a given connection.
-    func logFileURL(for connectionID: UUID) -> URL? {
-        logsDirectoryURL?.appendingPathComponent("\(connectionID.uuidString).log")
+    /// Remove a connection's mount source directory entirely (used on unmount
+    /// and on mount failure).
+    func clearMountConfig(for connectionID: UUID) {
+        guard let sourceDir = mountSourceDirectory(for: connectionID) else { return }
+        try? FileManager.default.removeItem(at: sourceDir)
     }
 
-    /// Read log contents for a connection.
-    func readLog(for connectionID: UUID) -> String {
-        guard let url = logFileURL(for: connectionID) else { return "No log file available." }
-        do {
-            return try String(contentsOf: url, encoding: .utf8)
-        } catch {
-            return "Log not available yet."
-        }
-    }
 }

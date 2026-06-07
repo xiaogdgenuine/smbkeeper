@@ -65,6 +65,7 @@ struct ConnectionListView: View {
             if let id = selectedConnectionID,
                let conn = connectionManager.connections.first(where: { $0.id == id }) {
                 ConnectionDetailView(connection: conn)
+                    .id(conn.id)
             } else {
                 ContentUnavailableView(
                     "选择 SMB 连接",
@@ -111,11 +112,9 @@ struct ConnectionDetailView: View {
     let connection: SMBConnection
     @State private var showingEditSheet = false
     @State private var selectedTab = 0
-    @State private var liveConnection: SMBConnection
 
-    init(connection: SMBConnection) {
-        self.connection = connection
-        _liveConnection = State(initialValue: connection)
+    private var liveConnection: SMBConnection {
+        connectionManager.connections.first(where: { $0.id == connection.id }) ?? connection
     }
 
     var body: some View {
@@ -147,13 +146,8 @@ struct ConnectionDetailView: View {
             .frame(maxHeight: .infinity)
         }
         .sheet(isPresented: $showingEditSheet) {
-            ConnectionEditView(connection: .constant(connection)) { updatedConn in
+            ConnectionEditView(connection: .constant(liveConnection)) { updatedConn in
                 connectionManager.updateConnection(updatedConn)
-            }
-        }
-        .onReceive(connectionManager.$connections) { conns in
-            if let updated = conns.first(where: { $0.id == connection.id }) {
-                liveConnection = updated
             }
         }
     }

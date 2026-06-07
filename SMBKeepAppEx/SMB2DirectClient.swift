@@ -17,6 +17,7 @@ final class SMB2DirectClient: @unchecked Sendable {
     private let connectionLock = NSLock()
     private var isConnected = false
     private let config: SMBConfiguration
+    private let logger: Logger
 
     /// Periodic SMB2 ECHO keepalive so idle connections aren't dropped by the
     /// server/NAT before the next file operation.
@@ -26,11 +27,12 @@ final class SMB2DirectClient: @unchecked Sendable {
 
     init(config: SMBConfiguration) throws {
         self.config = config
+        self.logger = Logger(subsystem: "com.apple.fskit.SMBKeepFS", category: config.connectionID)
         try self.queue.sync {
             try self.connectOnQueue()
         }
         self.isConnected = true
-        Logger.smbkeepfs.info("libsmb2 connected to \(config.shareName) at \(config.serverURL)")
+        self.logger.info("libsmb2 connected to \(config.shareName) at \(config.serverURL)")
         self.startKeepalive()
     }
 
@@ -40,7 +42,7 @@ final class SMB2DirectClient: @unchecked Sendable {
         defer { connectionLock.unlock() }
         guard isConnected else { return }
         let config = self.config
-        Logger.smbkeepfs.info("libsmb2 disconnecting from \(config.shareName)")
+        self.logger.info("libsmb2 disconnecting from \(config.shareName)")
         queue.sync {
             guard let ctx = self.context else { return }
             smb2_disconnect_share(ctx)
@@ -79,7 +81,7 @@ final class SMB2DirectClient: @unchecked Sendable {
             return smb2_echo(ctx) >= 0
         }
         guard !ok else { return }
-        Logger.smbkeepfs.info("libsmb2 keepalive echo failed, reconnecting proactively")
+        self.logger.info("libsmb2 keepalive echo failed, reconnecting proactively")
         self.reconnect()
     }
 
@@ -88,7 +90,7 @@ final class SMB2DirectClient: @unchecked Sendable {
         connectionLock.lock()
         defer { connectionLock.unlock() }
         let config = self.config
-        Logger.smbkeepfs.info("libsmb2 reconnecting to \(config.serverURL)/\(config.shareName)")
+        self.logger.info("libsmb2 reconnecting to \(config.serverURL)/\(config.shareName)")
         do {
             try queue.sync {
                 if let ctx = self.context {
@@ -99,10 +101,10 @@ final class SMB2DirectClient: @unchecked Sendable {
                 try self.connectOnQueue()
             }
             isConnected = true
-            Logger.smbkeepfs.info("libsmb2 reconnect succeeded")
+            self.logger.info("libsmb2 reconnect succeeded")
             return true
         } catch {
-            Logger.smbkeepfs.error("libsmb2 reconnect failed: \(error)")
+            self.logger.error("libsmb2 reconnect failed: \(error)")
             isConnected = false
             return false
         }
@@ -305,11 +307,11 @@ final class SMB2DirectClient: @unchecked Sendable {
 
     private func connectOnQueue() throws {
         guard let ctx = smb2_init_context() else {
-            Logger.smbkeepfs.error("libsmb2 init_context failed")
+            self.logger.error("libsmb2 init_context failed")
             throw POSIXError(.ENOMEM)
         }
         let config = self.config
-        Logger.smbkeepfs.info("libsmb2 connecting to \(config.serverURL)/\(config.shareName) as \(config.username)")
+        self.logger.info("libsmb2 connecting to \(config.serverURL)/\(config.shareName) as \(config.username)")
         if config.operationTimeout > 0 {
             smb2_set_timeout(ctx, Int32(config.operationTimeout))
         }
@@ -335,11 +337,11 @@ final class SMB2DirectClient: @unchecked Sendable {
         }
         if result < 0 {
             let error = SMB2LibSupport.posixError(fromContext: ctx, code: result)
-            Logger.smbkeepfs.error("libsmb2 connect failed: \(error)")
+            self.logger.error("libsmb2 connect failed: \(error)")
             smb2_destroy_context(ctx)
             throw error
         }
-        Logger.smbkeepfs.info("libsmb2 connected successfully")
+        self.logger.info("libsmb2 connected successfully")
         self.context = ctx
     }
 

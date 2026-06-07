@@ -37,8 +37,8 @@ class MountManager: ObservableObject {
         lastError = nil
         mountOutput = ""
 
-        guard manager.writeActiveConfig(for: connection.id) else {
-            lastError = "无法写入配置到共享容器"
+        guard let sourceDir = manager.writeMountConfig(for: connection.id) else {
+            lastError = "无法写入挂载配置"
             isBusy = false
             return false
         }
@@ -57,13 +57,17 @@ class MountManager: ObservableObject {
         await registerExtension()
 
         // Try multiple approaches to mount.
-        let result = await runMountCommand(extBundleID: extBundleID, mountPoint: mountPoint, connection: connection)
+        let result = await runMountCommand(extBundleID: extBundleID, sourceDir: sourceDir.path, mountPoint: mountPoint, connection: connection)
 
         if result {
+            // The extension has already read the config in loadResource, so wipe
+            // the plaintext credentials from disk immediately. Keep the (now empty)
+            // source directory so the mount's source path stays valid.
+            manager.removeMountConfigFile(for: connection.id)
             manager.markMounted(connection.id)
             logger.info("Mounted \(connection.displayName)")
         } else {
-            manager.clearActiveConfig()
+            manager.clearMountConfig(for: connection.id)
         }
 
         isBusy = false
@@ -81,7 +85,7 @@ class MountManager: ObservableObject {
 
         if result {
             manager.markUnmounted(connection.id)
-            manager.clearActiveConfig()
+            manager.clearMountConfig(for: connection.id)
             logger.info("Unmounted \(connection.displayName)")
         }
 
@@ -107,23 +111,21 @@ class MountManager: ObservableObject {
         mountOutput += "=== pluginkit refresh ===\n\(enableOutput)\n"
     }
 
-    private func runMountCommand(extBundleID: String, mountPoint: String, connection: SMBConnection) async -> Bool {
+    private func runMountCommand(extBundleID: String, sourceDir: String, mountPoint: String, connection: SMBConnection) async -> Bool {
         // FSKit extensions use the mount command with the FSShortName "smbkeep"
-        // from the extension's Info.plist.
+        // from the extension's Info.plist. The `-F` flag forces FSKit routing,
+        // and the source argument is the per-connection config directory, which
+        // FSKit delivers to the extension as a security-scoped FSPathURLResource.
         let displayName = connection.displayName.trimmingCharacters(in: .whitespaces)
 
         let commands: [(title: String, command: String)] = [
             // Try 1: mount with short name "smbkeep" (from Info.plist FSShortName)
-            ("mount -t smbkeep",
-             "mount -t smbkeep none \"\(mountPoint)\""),
+            ("mount -F -t smbkeep",
+             "/sbin/mount -F -t smbkeep \"\(sourceDir)\" \"\(mountPoint)\" 2>&1"),
 
-            // Try 2: With explicit extension option
-            ("mount -t smbkeep (extension)",
-             "mount -t smbkeep -o extension=\(extBundleID) none \"\(mountPoint)\""),
-
-            // Try 3: activate extension first then mount
+            // Try 2: activate developer mode first then mount
             ("systemextensionsctl + mount",
-             "systemextensionsctl developer on 2>/dev/null; mount -t smbkeep none \"\(mountPoint)\" 2>&1"),
+             "systemextensionsctl developer on 2>/dev/null; /sbin/mount -F -t smbkeep \"\(sourceDir)\" \"\(mountPoint)\" 2>&1"),
         ]
 
         for (name, cmd) in commands {
@@ -178,7 +180,7 @@ class MountManager: ObservableObject {
                 请确保：
                 1. 系统扩展已被批准：打开「系统设置 → 隐私与安全性」
                 2. 尝试手动挂载：
-                   mount -t smbkeep none "\(mountPoint)"
+                   /sbin/mount -F -t smbkeep "\(sourceDir)" "\(mountPoint)"
                 3. 检查系统扩展是否已启用：
                    systemextensionsctl list
 

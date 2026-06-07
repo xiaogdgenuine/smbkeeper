@@ -58,7 +58,7 @@ struct ConnectionEditView: View {
                 }
 
                 Section {
-                    Text("注意：密码以明文存储在本地的共享容器中")
+                    Text("挂载时密码会临时写入一个仅本人可读(0600)的配置文件供扩展读取，挂载成功后立即删除。连接列表保存在仅本人可访问(700)的容器中。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }

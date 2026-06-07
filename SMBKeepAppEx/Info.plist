@@ -26,7 +26,7 @@
 		<key>FSPersonalities</key>
 		<dict/>
 		<key>FSRequiresSecurityScopedPathURLResources</key>
-		<false/>
+		<true/>
 		<key>FSShortName</key>
 		<string>smbkeep</string>
 		<key>FSSupportsBlockResources</key>

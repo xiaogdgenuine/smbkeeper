@@ -9,12 +9,19 @@ SMB server settings for the passthrough file system extension,
 import Foundation
 import OSLog
 
-/// Connection parameters for the backing SMB share, loaded from shared config.
+/// Connection parameters for the backing SMB share.
 ///
-/// The main app writes an `active_config.json` file to the App Group container
-/// before triggering a mount. This struct reads that file and falls back to
-/// hard-coded defaults if no config is found.
+/// FSKit extensions cannot read the App Group container (the sandbox profile
+/// doesn't expose it), so the main app instead writes a per-connection
+/// `mount-config.json` into a directory it owns and passes that directory as the
+/// *source* argument to `mount`. FSKit hands that directory to the extension as
+/// an `FSPathURLResource` with security-scoped access, and we read the config
+/// from there in `loadResource`. Each mount has its own source directory, so
+/// multiple connections can be mounted at once without clobbering each other.
 struct SMBConfiguration {
+    /// File name written by the main app inside the mount source directory.
+    static let configFileName = "mount-config.json"
+
     let serverURL: URL
     let shareName: String
     let username: String
@@ -32,30 +39,29 @@ struct SMBConfiguration {
         URLCredential(user: username, password: password, persistence: .forSession)
     }
 
-    /// Load configuration from the shared App Group container.
-    static func loadFromSharedContainer() -> SMBConfiguration {
-        let appGroupID = "xiaogd.com.SMBKeep"
-        guard let containerURL = FileManager.default
-            .containerURL(forSecurityApplicationGroupIdentifier: appGroupID) else {
-            Logger.smbkeepfs.warning("No shared container, using defaults")
-            return defaultConfig
-        }
-
-        let configURL = containerURL.appendingPathComponent("active_config.json")
+    /// Load configuration from a mount source directory delivered by FSKit as an
+    /// `FSPathURLResource`. The caller is responsible for starting/stopping
+    /// security-scoped access on `directory` around this call.
+    static func load(fromSourceDirectory directory: URL) -> SMBConfiguration? {
+        let configURL = directory.appendingPathComponent(configFileName)
         guard let data = try? Data(contentsOf: configURL) else {
-            Logger.smbkeepfs.warning("No active_config.json, using defaults")
-            return defaultConfig
+            Logger.smbkeepfs.warning("No \(configFileName) at \(configURL.path)")
+            return nil
         }
+        return parse(data: data)
+    }
 
+    /// Parse a `mount-config.json` payload into a configuration.
+    static func parse(data: Data) -> SMBConfiguration? {
         do {
-            guard let json = try JSONSerialization.jsonObject(with: data) as? [String: String] else {
-                return defaultConfig
+            guard let json = try JSONSerialization.jsonObject(with: data) as? [String: String], let url = json["serverURL"], let serverURL = URL(string: url) else {
+                return nil
             }
             let config = SMBConfiguration(
-                serverURL: URL(string: json["serverURL"] ?? "smb://192.168.1.4")!,
-                shareName: json["shareName"] ?? "2T",
-                username: json["username"] ?? "test",
-                password: json["password"] ?? "1Ailovetest",
+                serverURL: serverURL,
+                shareName: json["shareName"] ?? "",
+                username: json["username"] ?? "",
+                password: json["password"] ?? "",
                 volumeNameSuffix: defaultVolumeNameSuffix,
                 operationTimeout: TimeInterval(json["operationTimeout"] ?? "120") ?? 120,
                 connectionID: json["connectionID"] ?? UUID().uuidString,
@@ -67,22 +73,7 @@ struct SMBConfiguration {
             return config
         } catch {
             Logger.smbkeepfs.error("Failed to parse config: \(error)")
-            return defaultConfig
+            return nil
         }
-    }
-
-    private static var defaultConfig: SMBConfiguration {
-        SMBConfiguration(
-            serverURL: URL(string: "smb://192.168.1.4")!,
-            shareName: "2T",
-            username: "test",
-            password: "1Ailovetest",
-            volumeNameSuffix: defaultVolumeNameSuffix,
-            operationTimeout: 120,
-            connectionID: UUID().uuidString,
-            displayName: "默认共享",
-            localUID: getuid(),
-            localGID: getgid()
-        )
     }
 }

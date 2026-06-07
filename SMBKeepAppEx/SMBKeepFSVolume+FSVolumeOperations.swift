@@ -74,7 +74,7 @@ extension SMBKeepFSVolume: FSVolume.Operations {
                 res.freeFiles = freeNodes.uint64Value
             }
         } catch {
-            Logger.smbkeepfs.debug("\(#function): statvfs unavailable (\(error))")
+            self.logger.debug("\(#function): statvfs unavailable (\(error))")
         }
         return res
     }

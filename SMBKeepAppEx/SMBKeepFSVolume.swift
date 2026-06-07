@@ -23,8 +23,6 @@ class SMBKeepFSVolume: FSVolume,
                            FSVolume.PreallocateOperations,
                            FSVolume.OpenCloseOperations {
 
-    static let defaultVolumeUUID = UUID()
-
     var rootItem: SMBKeepFSItem
     var itemCache: [UInt64: SMBKeepFSItem]
     var itemCacheQueue: DispatchQueue
@@ -46,6 +44,7 @@ class SMBKeepFSVolume: FSVolume,
     let smb: SMBBackend
     let volumeLabel: String
     let connectionID: String
+    let logger: Logger
 
     /// The SMB config used to create this volume.
     let smbConfig: SMBConfiguration
@@ -53,11 +52,6 @@ class SMBKeepFSVolume: FSVolume,
     /// Local-only store for Finder metadata xattrs (tags, comment, "open with"),
     /// so they never get written back to the remote SMB share.
     // let localXattrStore: SMBKeepLocalXattrStore
-
-    /// File logger for writing runtime logs to the shared container.
-    private let logQueue = DispatchQueue(label: "com.apple.fskit.smbkeepfs.log.queue",
-                                         qos: .background)
-    private let logFileURL: URL?
 
     private var sleepWakeMonitor: SleepWakeMonitor?
     private var networkMonitor: SystemNetworkMonitor?
@@ -69,64 +63,33 @@ class SMBKeepFSVolume: FSVolume,
         self.smbConfig = smbConfig
         self.connectionID = smbConfig.connectionID
         self.volumeLabel = volumeName.string ?? smbConfig.displayName
+        self.logger = Logger(subsystem: "com.apple.fskit.SMBKeepFS", category: smbConfig.connectionID)
         // self.localXattrStore = SMBKeepLocalXattrStore(connectionID: smbConfig.connectionID)
-
-        // Set up log file in the shared App Group container
-        let appGroupID = "xiaogd.com.SMBKeep"
-        if let containerURL = FileManager.default
-            .containerURL(forSecurityApplicationGroupIdentifier: appGroupID) {
-            let logsDir = containerURL.appendingPathComponent("logs", isDirectory: true)
-            try? FileManager.default.createDirectory(at: logsDir, withIntermediateDirectories: true)
-            self.logFileURL = logsDir.appendingPathComponent("\(smbConfig.connectionID).log")
-        } else {
-            self.logFileURL = nil
-        }
 
         let rootInode = SMBAttributeMapping.inodeForPath("")
         self.rootItem = SMBKeepFSItem(name: ".", smbPath: "", type: .directory, openFlags: .readOnly, inode: rootInode)
         self.itemCache = [:]
         self.itemCacheQueue = DispatchQueue(label: "com.apple.fskit.smbkeepfs.itemcache.queue")
-        super.init(volumeID: FSVolume.Identifier(uuid: SMBKeepFSVolume.defaultVolumeUUID), volumeName: volumeName)
-        Logger.smbkeepfs.info("\(#function): Created SMB volume \(self.name)")
+        // Derive a stable, per-connection volume ID so multiple connections can be
+        // mounted at the same time without sharing one identifier.
+        let volumeUUID = UUID(uuidString: smbConfig.connectionID) ?? UUID()
+        super.init(volumeID: FSVolume.Identifier(uuid: volumeUUID), volumeName: volumeName)
+        self.logger.info("\(#function): Created SMB volume \(self.name)")
         self.log("Volume initialized: \(smbConfig.displayName)")
 
-        self.sleepWakeMonitor = SleepWakeMonitor { [weak self] in
+        self.sleepWakeMonitor = SleepWakeMonitor(logger: self.logger) { [weak self] in
             self?.handleSystemDidWake()
         }
-        self.networkMonitor = SystemNetworkMonitor { [weak self] in
+        self.networkMonitor = SystemNetworkMonitor(logger: self.logger) { [weak self] in
             self?.reconnectAndClearCaches(reason: "network change")
         }
     }
 
-    // MARK: - File Logging
+    // MARK: - Logging
 
-    /// Write a timestamped log entry to the shared log file for this connection.
+    /// Emit a runtime log entry to the unified logging system (read live by the host app).
     func log(_ message: String) {
-        let timestamp: String = {
-            var now = timespec()
-            clock_gettime(CLOCK_REALTIME, &now)
-            let sec = now.tv_sec
-            let nsec = now.tv_nsec
-            let df = DateFormatter()
-            df.dateFormat = "yyyy-MM-dd HH:mm:ss.SSS"
-            return df.string(from: Date(timeIntervalSince1970: TimeInterval(sec) + TimeInterval(nsec) / 1_000_000_000))
-        }()
-
-        let line = "[\(timestamp)] [FSVolume] \(message)\n"
-        Logger.smbkeepfs.info("\(message)")
-
-        guard let logURL = logFileURL else { return }
-        logQueue.async {
-            if let handle = try? FileHandle(forWritingTo: logURL) {
-                handle.seekToEndOfFile()
-                if let data = line.data(using: .utf8) {
-                    handle.write(data)
-                }
-                try? handle.close()
-            } else {
-                try? line.write(to: logURL, atomically: true, encoding: .utf8)
-            }
-        }
+        self.logger.info("[FSVolume] \(message)")
     }
 
     public func setVolumeName(_ name: FSFileName, replyHandler: @escaping (FSFileName?, (any Error)?) -> Void) {
@@ -186,7 +149,7 @@ class SMBKeepFSVolume: FSVolume,
                     continue
                 }
                 self.log("Read failed: \(ptItem.smbPath) error=\(error)")
-                Logger.smbkeepfs.error("\(#function): read \(ptItem.smbPath) failed: \(error)")
+                self.logger.error("\(#function): read \(ptItem.smbPath) failed: \(error)")
                 return replyHandler(0, error)
             }
         }
@@ -287,7 +250,7 @@ class SMBKeepFSVolume: FSVolume,
         do {
             try item.forceReopen(mode: mode)
         } catch {
-            Logger.smbkeepfs.error("\(#function): Failed to reopen \(item.name): \(error)")
+            self.logger.error("\(#function): Failed to reopen \(item.name): \(error)")
             self.log("Failed to reopen \(item.name): \(error)")
             return false
         }
@@ -350,13 +313,13 @@ class SMBKeepFSVolume: FSVolume,
 
         if ok {
             self.clearAllDirectoryCaches()
-            Logger.smbkeepfs.info("\(#function): Reconnected SMB after \(reason) (attempt \(attempt))")
+            self.logger.info("\(#function): Reconnected SMB after \(reason) (attempt \(attempt))")
             return
         }
 
         let maxAttempts = 5
         guard attempt < maxAttempts else {
-            Logger.smbkeepfs.error("\(#function): Couldn't reconnect SMB after \(reason)")
+            self.logger.error("\(#function): Couldn't reconnect SMB after \(reason)")
             return
         }
         let delay = DispatchTimeInterval.seconds(attempt + 1)
@@ -385,9 +348,11 @@ final class SystemNetworkMonitor {
     private var store: SCDynamicStore?
     private let queue = DispatchQueue(label: "com.apple.fskit.smbkeepfs.network.queue")
     private let onChange: () -> Void
+    private let logger: Logger
     private var lastSnapshot: String?
 
-    init(onChange: @escaping () -> Void) {
+    init(logger: Logger, onChange: @escaping () -> Void) {
+        self.logger = logger
         self.onChange = onChange
         self.queue.async { [weak self] in
             self?.startOnQueue()
@@ -409,7 +374,7 @@ final class SystemNetworkMonitor {
             systemNetworkStoreCallback,
             &context
         ) else {
-            Logger.smbkeepfs.error("\(#function): SCDynamicStoreCreate failed")
+            self.logger.error("\(#function): SCDynamicStoreCreate failed")
             return
         }
         self.store = store
@@ -423,11 +388,11 @@ final class SystemNetworkMonitor {
         self.lastSnapshot = Self.captureSnapshot(from: store)
 
         guard let source = SCDynamicStoreCreateRunLoopSource(nil, store, 0) else {
-            Logger.smbkeepfs.error("\(#function): SCDynamicStoreCreateRunLoopSource failed")
+            self.logger.error("\(#function): SCDynamicStoreCreateRunLoopSource failed")
             return
         }
         CFRunLoopAddSource(CFRunLoopGetCurrent(), source, .defaultMode)
-        Logger.smbkeepfs.info("\(#function): System network monitor active (SCDynamicStore)")
+        self.logger.info("\(#function): System network monitor active (SCDynamicStore)")
         CFRunLoopRun()
     }
 
@@ -436,7 +401,7 @@ final class SystemNetworkMonitor {
         let snapshot = Self.captureSnapshot(from: store)
         defer { self.lastSnapshot = snapshot }
         guard self.lastSnapshot != snapshot else { return }
-        Logger.smbkeepfs.info("\(#function): Network configuration changed")
+        self.logger.info("\(#function): Network configuration changed")
         self.onChange()
     }
 
@@ -479,12 +444,14 @@ final class SleepWakeMonitor {
     private static let messageSystemHasPoweredOn: UInt32 = 0xE000_0300
 
     private let onWake: () -> Void
+    private let logger: Logger
     private let queue = DispatchQueue(label: "com.apple.fskit.smbkeepfs.sleepwake.queue")
     private var rootPort: io_connect_t = 0
     private var notifierObject: io_object_t = 0
     private var notificationPort: IONotificationPortRef?
 
-    init?(onWake: @escaping () -> Void) {
+    init?(logger: Logger, onWake: @escaping () -> Void) {
+        self.logger = logger
         self.onWake = onWake
         let context = Unmanaged.passUnretained(self).toOpaque()
         var notifier: io_object_t = 0
@@ -496,14 +463,14 @@ final class SleepWakeMonitor {
         }, &notifier)
 
         guard connect != 0, let port else {
-            Logger.smbkeepfs.error("\(#function): IORegisterForSystemPower failed")
+            self.logger.error("\(#function): IORegisterForSystemPower failed")
             return nil
         }
         self.rootPort = connect
         self.notifierObject = notifier
         self.notificationPort = port
         IONotificationPortSetDispatchQueue(port, self.queue)
-        Logger.smbkeepfs.info("\(#function): Sleep/wake monitor active")
+        self.logger.info("\(#function): Sleep/wake monitor active")
     }
 
     private func handle(messageType: UInt32, messageArgument: UnsafeMutableRawPointer?) {

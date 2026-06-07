@@ -8,7 +8,7 @@ View for displaying extension runtime logs for a specific SMB connection.
 import SwiftUI
 import OSLog
 
-/// Displays real-time logs from the extension for a given connection.
+/// Displays real-time logs from the extension, read live from the unified log store.
 struct LogViewer: View {
     let connectionID: UUID
 
@@ -16,8 +16,12 @@ struct LogViewer: View {
     @State private var logContent: String = ""
     @State private var autoScroll = true
     @State private var refreshTimer: Timer?
+    @State private var isRefreshing = false
+    /// Only show entries at or after this instant; "清空" advances it to now.
+    @State private var sinceDate = Date()
 
-    private static let logLimit = 10_000  // max characters to display
+    private static let logLimit = 10_000          // max characters to display
+    private static let windowSeconds: TimeInterval = 600  // bound the live query window
 
     var body: some View {
         VStack(spacing: 0) {
@@ -38,7 +42,7 @@ struct LogViewer: View {
 
                 Button {
                     logContent = ""
-                    clearExtensionLog()
+                    sinceDate = Date()
                 } label: {
                     Label("清空", systemImage: "trash")
                 }
@@ -71,8 +75,9 @@ struct LogViewer: View {
             }
         }
         .onAppear {
+            sinceDate = Date().addingTimeInterval(-Self.windowSeconds)
             refreshLog()
-            refreshTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { _ in
+            refreshTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { _ in
                 refreshLog()
             }
         }
@@ -83,17 +88,22 @@ struct LogViewer: View {
     }
 
     private func refreshLog() {
-        let raw = connectionManager.readLog(for: connectionID)
-        if raw.count > Self.logLimit {
-            logContent = "... [日志截断] ...\n" + String(raw.suffix(Self.logLimit))
-        } else {
-            logContent = raw
+        guard !isRefreshing else { return }
+        isRefreshing = true
+        // Bound the query window so a long-open viewer stays responsive.
+        let effectiveSince = max(sinceDate, Date().addingTimeInterval(-Self.windowSeconds))
+        let connectionID = self.connectionID
+        let logLimit = Self.logLimit
+        Task.detached(priority: .utility) {
+            let lines = ExtensionLogReader.read(since: effectiveSince, connectionID: connectionID)
+            let joined = lines.joined(separator: "\n")
+            let text = joined.count > logLimit
+                ? "... [日志截断] ...\n" + String(joined.suffix(logLimit))
+                : joined
+            await MainActor.run {
+                self.logContent = text
+                self.isRefreshing = false
+            }
         }
-    }
-
-    private func clearExtensionLog() {
-        guard let url = connectionManager.logFileURL(for: connectionID) else { return }
-        try? "".write(to: url, atomically: true, encoding: .utf8)
-        logContent = ""
     }
 }

@@ -36,15 +36,28 @@ enum SMBAttributeMapping {
 
     static func inode(from attributes: [URLResourceKey: any Sendable], fallbackPath: String) -> UInt64 {
         if let ino = attributes[.documentIdentifierKey] as? NSNumber {
-            return ino.uint64Value
+            let value = ino.uint64Value
+            // Some SMB servers report 0 (or otherwise unusable) file IDs for
+            // directory entries. Treat that as missing; using 0 would make many
+            // entries share one FSKit item identity and poison the item cache.
+            if value != 0 {
+                return value
+            }
         }
         return inodeForPath(fallbackPath)
     }
 
     static func inodeForPath(_ path: String) -> UInt64 {
-        var hasher = Hasher()
-        hasher.combine(path)
-        return UInt64(bitPattern: Int64(hasher.finalize()))
+        // Deterministic FNV-1a fallback. Swift's Hasher is randomized per
+        // process; FSKit only needs identities stable for a mounted volume, but
+        // deterministic values make diagnostics and cache behavior easier to
+        // reason about. Reserve 0 for invalid/missing identity.
+        var hash: UInt64 = 1_469_598_103_934_665_603
+        for byte in path.utf8 {
+            hash ^= UInt64(byte)
+            hash &*= 1_099_511_628_211
+        }
+        return hash == 0 ? 1 : hash
     }
 
     static func makeAttributes(from attributes: [URLResourceKey: any Sendable],
@@ -69,10 +82,13 @@ enum SMBAttributeMapping {
         if desired.isAttributeWanted(.flags) {
             attrs.flags = 0
         }
-        if desired.isAttributeWanted(.size), itemType == .file {
+        // Always report size/allocSize, even for directories and symlinks: FSKit's
+        // standard attribute set requires them, and omitting them yields an
+        // "attributes are incomplete" error.
+        if desired.isAttributeWanted(.size) {
             attrs.size = (attributes[.fileSizeKey] as? NSNumber)?.uint64Value ?? 0
         }
-        if desired.isAttributeWanted(.allocSize), itemType == .file {
+        if desired.isAttributeWanted(.allocSize) {
             attrs.allocSize = attrs.size
         }
         if desired.isAttributeWanted(.fileID) {

@@ -81,6 +81,14 @@ class MountManager: ObservableObject {
 
         let mountPoint = mountPoint(for: connection).path
 
+        guard await isMountPointMounted(mountPoint) else {
+            mountOutput += "挂载点已经不在 mount 表中，按已卸载处理\n"
+            manager.markUnmounted(connection.id)
+            manager.clearMountConfig(for: connection.id)
+            isBusy = false
+            return true
+        }
+
         let result = await runUnmountCommand(mountPoint: mountPoint, connection: connection)
 
         if result {
@@ -116,8 +124,6 @@ class MountManager: ObservableObject {
         // from the extension's Info.plist. The `-F` flag forces FSKit routing,
         // and the source argument is the per-connection config directory, which
         // FSKit delivers to the extension as a security-scoped FSPathURLResource.
-        let displayName = connection.displayName.trimmingCharacters(in: .whitespaces)
-
         let commands: [(title: String, command: String)] = [
             // Try 1: mount with short name "smbkeep" (from Info.plist FSShortName)
             ("mount -F -t smbkeep",
@@ -137,14 +143,12 @@ class MountManager: ObservableObject {
             if !lower.contains("failed") && !lower.contains("error") && !lower.contains("not found")
                 && !lower.contains("unknown special file") && !lower.contains("no such file") {
                 // Verify it's actually mounted
-                let checkOutput = await runShellCommand("mount | grep \"\(displayName)\"")
-                if !checkOutput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                if await isMountPointMounted(mountPoint) {
                     return true
                 }
                 // Wait a bit and check again
                 try? await Task.sleep(nanoseconds: 1_000_000_000)
-                let checkOutput2 = await runShellCommand("mount | grep \"\(displayName)\"")
-                if !checkOutput2.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                if await isMountPointMounted(mountPoint) {
                     return true
                 }
             }
@@ -161,8 +165,7 @@ class MountManager: ObservableObject {
                     logger.info("Retrying \(name) after fskitd restart...")
                     let retryOutput = await runShellCommand(cmd)
                     mountOutput += "=== retry: \(name) ===\n\(retryOutput)\n\n"
-                    let retryCheck = await runShellCommand("mount | grep \"\(displayName)\"")
-                    if !retryCheck.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    if await isMountPointMounted(mountPoint) {
                         return true
                     }
                 }
@@ -191,8 +194,6 @@ class MountManager: ObservableObject {
     }
 
     private func runUnmountCommand(mountPoint: String, connection: SMBConnection) async -> Bool {
-        let displayName = connection.displayName.trimmingCharacters(in: .whitespaces)
-
         let commands: [(title: String, command: String)] = [
             ("diskutil unmount", "diskutil unmount \"\(mountPoint)\" 2>&1"),
             ("diskutil unmount force", "diskutil unmount force \"\(mountPoint)\" 2>&1"),
@@ -206,25 +207,40 @@ class MountManager: ObservableObject {
             mountOutput += "=== \(name) ===\n\(output)\n\n"
 
             let lower = output.lowercased()
-            if !lower.contains("failed") && !lower.contains("not currently mounted")
-                && !lower.contains("resource busy") && !lower.contains("no such file") {
-                // Check if unmounted
-                let checkOutput = await runShellCommand("mount | grep \"\(displayName)\"")
-                if checkOutput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            if lower.contains("not currently mounted") || lower.contains("no such file")
+                || lower.contains("not mounted") {
+                if !(await isMountPointMounted(mountPoint)) {
+                    mountOutput += "挂载点已经卸载，忽略卸载命令错误\n"
+                    return true
+                }
+            }
+
+            if !lower.contains("failed") && !lower.contains("resource busy") {
+                if !(await isMountPointMounted(mountPoint)) {
                     return true
                 }
             }
         }
 
         // Check if it's already not mounted
-        let checkOutput = await runShellCommand("mount | grep \"\(displayName)\"")
-        if checkOutput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        if !(await isMountPointMounted(mountPoint)) {
             mountOutput += "卷宗似乎已经卸载\n"
             return true
         }
 
         lastError = "卸载失败，请尝试: diskutil unmount force \"\(mountPoint)\""
         return false
+    }
+
+    private func isMountPointMounted(_ mountPoint: String) async -> Bool {
+        let marker = " on \(mountPoint) "
+        let command = "mount | grep -F \(shellQuoted(marker))"
+        let output = await runShellCommand(command)
+        return !output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private func shellQuoted(_ value: String) -> String {
+        "'\(value.replacingOccurrences(of: "'", with: "'\\''"))'"
     }
 
     private func runShellCommand(_ command: String) async -> String {

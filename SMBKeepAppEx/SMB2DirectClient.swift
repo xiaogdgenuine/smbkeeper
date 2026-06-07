@@ -19,6 +19,23 @@ final class SMB2DirectClient: @unchecked Sendable {
     private let config: SMBConfiguration
     private let logger: Logger
 
+    /// A cached open SMB file handle plus whether it was opened for writing.
+    private struct CachedHandle {
+        var fh: OpaquePointer
+        /// True if opened `O_RDWR` (can serve both reads and writes); false if
+        /// opened `O_RDONLY`.
+        var writable: Bool
+    }
+
+    /// Open file handles keyed by SMB path, reused across `read`/`write` calls to
+    /// avoid an open/close round trip per operation (critical for large
+    /// sequential reads like video playback, and for writing large files).
+    /// A single handle per path serves both reads and writes; it is upgraded to
+    /// `O_RDWR` on first write. Only accessed on `queue`, so no extra locking.
+    /// Bound to the current `smb2_context`; cleared whenever the context is torn
+    /// down (reconnect/disconnect).
+    private var handles: [String: CachedHandle] = [:]
+
     /// Periodic SMB2 ECHO keepalive so idle connections aren't dropped by the
     /// server/NAT before the next file operation.
     private let keepaliveQueue = DispatchQueue(label: "com.apple.fskit.smbkeepfs.keepalive.queue")
@@ -45,6 +62,10 @@ final class SMB2DirectClient: @unchecked Sendable {
         self.logger.info("libsmb2 disconnecting from \(config.shareName)")
         queue.sync {
             guard let ctx = self.context else { return }
+            // Connection is healthy here, so close cached handles gracefully to
+            // flush writes and free the smb2fh structs (destroy_context does not
+            // free them).
+            self.closeAllHandlesOnQueue(ctx)
             smb2_disconnect_share(ctx)
             smb2_destroy_context(ctx)
             self.context = nil
@@ -93,6 +114,12 @@ final class SMB2DirectClient: @unchecked Sendable {
         self.logger.info("libsmb2 reconnecting to \(config.serverURL)/\(config.shareName)")
         do {
             try queue.sync {
+                // Reconnect usually happens because the connection is dead;
+                // closing handles would do I/O on a broken socket and could hang
+                // until the operation timeout. So just drop the references — the
+                // old context is destroyed and a fresh one is built below, and
+                // read()/write() will lazily reopen handles on demand.
+                self.closeAllHandlesOnQueue(nil)
                 if let ctx = self.context {
                     smb2_disconnect_share(ctx)
                     smb2_destroy_context(ctx)
@@ -197,6 +224,7 @@ final class SMB2DirectClient: @unchecked Sendable {
     func truncateFile(atPath path: String, atOffset: UInt64) throws {
         try perform { ctx in
             let trimmed = path.smbTrimmedPath
+            self.closeHandleOnQueue(ctx, trimmed)
             let result = trimmed.withCString { smb2_truncate(ctx, $0, atOffset) }
             try SMB2LibSupport.check(result, context: ctx)
         }
@@ -224,6 +252,7 @@ final class SMB2DirectClient: @unchecked Sendable {
         try perform { ctx in
             var st = smb2_stat_64()
             let trimmed = path.smbTrimmedPath
+            self.closeHandleOnQueue(ctx, trimmed)
             let statResult = trimmed.withCString { smb2_stat(ctx, $0, &st) }
             try SMB2LibSupport.check(statResult, context: ctx)
             let result: Int32
@@ -240,6 +269,10 @@ final class SMB2DirectClient: @unchecked Sendable {
         try perform { ctx in
             let from = path.smbTrimmedPath
             let to = toPath.smbTrimmedPath
+            // Old path's cached handle becomes invalid after rename; drop both
+            // sides to be safe (a handle may also exist for the destination).
+            self.closeHandleOnQueue(ctx, from)
+            self.closeHandleOnQueue(ctx, to)
             let result = from.withCString { fromPtr in
                 to.withCString { toPtr in
                     smb2_rename(ctx, fromPtr, toPtr)
@@ -270,10 +303,10 @@ final class SMB2DirectClient: @unchecked Sendable {
     func read(path: String, offset: UInt64, length: Int) throws -> Data {
         try perform { ctx in
             let trimmed = path.smbTrimmedPath
-            guard let fh = trimmed.withCString({ smb2_open(ctx, $0, O_RDONLY) }) else {
-                throw SMB2LibSupport.posixError(fromContext: ctx, code: -1)
-            }
-            defer { smb2_close(ctx, fh) }
+            // Reuse a cached handle if present; otherwise open O_RDONLY and cache.
+            // The handle stays open until closeHandle / context teardown.
+            let fh = try self.handleOnQueue(ctx, trimmed: trimmed,
+                                            needWrite: false, createIfMissing: false)
 
             var data = Data(count: length)
             let readCount = data.withUnsafeMutableBytes { raw -> Int32 in
@@ -288,11 +321,10 @@ final class SMB2DirectClient: @unchecked Sendable {
     func write(path: String, data: Data, offset: UInt64) throws -> Int {
         try perform { ctx in
             let trimmed = path.smbTrimmedPath
-            let flags = offset == 0 ? (O_RDWR | O_CREAT) : O_RDWR
-            guard let fh = trimmed.withCString({ smb2_open(ctx, $0, flags) }) else {
-                throw SMB2LibSupport.posixError(fromContext: ctx, code: -1)
-            }
-            defer { smb2_close(ctx, fh) }
+            // Reuse/upgrade to a writable handle. The same handle also serves
+            // subsequent reads, so reads stay coherent with what we just wrote.
+            let fh = try self.handleOnQueue(ctx, trimmed: trimmed,
+                                            needWrite: true, createIfMissing: offset == 0)
 
             let writeCount = data.withUnsafeBytes { raw -> Int32 in
                 guard let base = raw.baseAddress else { return -1 }
@@ -301,6 +333,77 @@ final class SMB2DirectClient: @unchecked Sendable {
             try SMB2LibSupport.check(writeCount, context: ctx)
             return Int(writeCount)
         }
+    }
+
+    /// Flush all writable cached handles to the server (maps to FSKit's volume
+    /// `synchronize`). pwrite already sends data to the server; fsync asks the
+    /// server to commit it to stable storage.
+    func flushAll() throws {
+        try perform { ctx in
+            for (_, cached) in self.handles where cached.writable {
+                let rc = smb2_fsync(ctx, cached.fh)
+                try SMB2LibSupport.check(rc, context: ctx)
+            }
+        }
+    }
+
+    /// Close the cached handle for a path, if any (closing a writable handle also
+    /// flushes it server-side). Safe to call when the path has no open handle.
+    /// Call on file close/reclaim, or before a mutation that should invalidate
+    /// cached state (truncate/remove/move).
+    func closeHandle(forPath path: String) {
+        let trimmed = path.smbTrimmedPath
+        queue.sync {
+            self.closeHandleOnQueue(self.context, trimmed)
+        }
+    }
+
+    /// Returns a cached handle for `trimmed` with the required capability,
+    /// opening (or upgrading a read-only handle to read/write) as needed.
+    /// Must be called on `queue` (e.g. inside `perform`).
+    private func handleOnQueue(_ ctx: UnsafeMutablePointer<smb2_context>,
+                               trimmed: String,
+                               needWrite: Bool,
+                               createIfMissing: Bool) throws -> OpaquePointer {
+        if let cached = self.handles[trimmed] {
+            if !needWrite || cached.writable {
+                return cached.fh
+            }
+            // Need write but the cached handle is read-only: close and reopen RDWR.
+            smb2_close(ctx, cached.fh)
+            self.handles.removeValue(forKey: trimmed)
+        }
+
+        var flags = needWrite ? O_RDWR : O_RDONLY
+        if needWrite && createIfMissing {
+            flags |= O_CREAT
+        }
+        guard let fh = trimmed.withCString({ smb2_open(ctx, $0, flags) }) else {
+            throw SMB2LibSupport.posixError(fromContext: ctx, code: -1)
+        }
+        self.handles[trimmed] = CachedHandle(fh: fh, writable: needWrite)
+        return fh
+    }
+
+    /// Closes and removes a single cached handle. Must be called on `queue`.
+    /// Passing a nil `ctx` just drops the reference (used when the context is
+    /// already gone, to avoid I/O on a dead connection).
+    private func closeHandleOnQueue(_ ctx: UnsafeMutablePointer<smb2_context>?, _ trimmed: String) {
+        guard let cached = self.handles.removeValue(forKey: trimmed) else { return }
+        if let ctx {
+            smb2_close(ctx, cached.fh)
+        }
+    }
+
+    /// Closes every cached handle. Must be called on `queue`. With a valid `ctx`
+    /// it closes gracefully (flushing writes); with nil it only drops references.
+    private func closeAllHandlesOnQueue(_ ctx: UnsafeMutablePointer<smb2_context>?) {
+        if let ctx {
+            for (_, cached) in self.handles {
+                smb2_close(ctx, cached.fh)
+            }
+        }
+        self.handles.removeAll(keepingCapacity: true)
     }
 
     // MARK: - Private

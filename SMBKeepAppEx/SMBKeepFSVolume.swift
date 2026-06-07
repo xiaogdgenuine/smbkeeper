@@ -212,6 +212,11 @@ class SMBKeepFSVolume: FSVolume,
         guard ptItem != self.rootItem else {
             return replyHandler(nil)
         }
+        // Release the cached SMB handle now that this file is being closed; for a
+        // writable handle this also flushes pending writes to the server.
+        if ptItem.itemType == .file {
+            self.smb.closeHandle(forPath: ptItem.smbPath)
+        }
         do {
             try ptItem.closeItem()
         } catch {

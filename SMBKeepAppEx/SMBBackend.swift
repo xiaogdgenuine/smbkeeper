@@ -80,6 +80,14 @@ final class SMBBackend: @unchecked Sendable {
         try client.read(path: path, offset: offset, length: length)
     }
 
+    func closeHandle(forPath path: String) {
+        client.closeHandle(forPath: path)
+    }
+
+    func flushAll() throws {
+        try client.flushAll()
+    }
+
     func write(path: String, data: Data, offset: UInt64) throws -> Int {
         try client.write(path: path, data: data, offset: offset)
     }

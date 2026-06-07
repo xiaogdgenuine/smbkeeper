@@ -105,7 +105,18 @@ extension SMBKeepFSVolume: FSVolume.Operations {
     }
 
     public func synchronize(flags: FSSyncFlags, replyHandler reply: @escaping ((any Error)?) -> Void) {
-        reply(nil)
+        // Flush cached writable handles to the server. pwrite already delivered
+        // the bytes; fsync asks the server to commit them to stable storage.
+        do {
+            try self.smb.flushAll()
+            return reply(nil)
+        } catch {
+            if self.recoverFromConnectionLoss(error) {
+                // After a reconnect there are no open handles left to flush.
+                return reply(nil)
+            }
+            return reply(error)
+        }
     }
 
     public func getAttributes(_ desiredAttributes: FSItem.GetAttributesRequest,
@@ -225,7 +236,7 @@ extension SMBKeepFSVolume: FSVolume.Operations {
                 self.itemCacheQueue.sync {
                     cached = self.itemCache[inode]
                 }
-                if let cached {
+                if let cached, cached.smbPath == childPath {
                     return replyHandler(cached, nil, nil)
                 }
 
@@ -255,6 +266,10 @@ extension SMBKeepFSVolume: FSVolume.Operations {
             self.itemCache.removeValue(forKey: ptItem.inode)
         }
         self.invalidateEnumerationCache(forInode: ptItem.inode)
+        // Safety net: ensure no handle outlives the item being reclaimed.
+        if ptItem.itemType == .file {
+            self.smb.closeHandle(forPath: ptItem.smbPath)
+        }
         try? ptItem.closeItem()
         replyHandler(nil)
     }
@@ -567,8 +582,11 @@ extension SMBKeepFSVolume: FSVolume.Operations {
         if desired.isAttributeWanted(.mode) { attrs.mode = raw.accessMask & UInt32(modeAllBits) }
         if desired.isAttributeWanted(.linkCount) { attrs.linkCount = raw.linkCount }
         if desired.isAttributeWanted(.flags) { attrs.flags = raw.bsdFlags }
-        if desired.isAttributeWanted(.size), itemType == .file { attrs.size = raw.size }
-        if desired.isAttributeWanted(.allocSize), itemType == .file { attrs.allocSize = raw.allocSize }
+        // Always report size/allocSize, even for directories and symlinks: FSKit's
+        // standard attribute set requires them, and omitting them yields an
+        // "attributes are incomplete" error.
+        if desired.isAttributeWanted(.size) { attrs.size = raw.size }
+        if desired.isAttributeWanted(.allocSize) { attrs.allocSize = raw.allocSize }
         if desired.isAttributeWanted(.fileID) {
             attrs.fileID = FSItem.Identifier(rawValue: raw.fileID) ?? .invalid
         }

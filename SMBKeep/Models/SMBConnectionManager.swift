@@ -34,6 +34,7 @@ class SMBConnectionManager: ObservableObject {
     init() {
         loadConnections()
         loadActiveMounts()
+        reconcileMountStateWithSystem()
     }
 
     // MARK: - Connection Persistence
@@ -44,6 +45,7 @@ class SMBConnectionManager: ObservableObject {
             let data = try Data(contentsOf: url)
             let decoded = try JSONDecoder().decode([SMBConnection].self, from: data)
             connections = decoded
+            restorePasswordsFromKeychain()
             logger.info("Loaded \(decoded.count) connection(s)")
         } catch {
             logger.debug("No saved connections, using defaults")
@@ -62,18 +64,46 @@ class SMBConnectionManager: ObservableObject {
         }
     }
 
+    private func restorePasswordsFromKeychain() {
+        var changed = false
+        for i in connections.indices {
+            let conn = connections[i]
+            if let keychainPassword = KeychainHelper.getPassword(forConnectionID: conn.id) {
+                if conn.password != keychainPassword {
+                    connections[i].password = keychainPassword
+                }
+            } else if !conn.password.isEmpty {
+                KeychainHelper.savePassword(conn.password, forConnectionID: conn.id)
+                changed = true
+            }
+        }
+        if changed {
+            saveConnections()
+        }
+    }
+
     func addConnection(_ connection: SMBConnection) {
+        if !connection.password.isEmpty {
+            KeychainHelper.savePassword(connection.password, forConnectionID: connection.id)
+        }
         connections.append(connection)
         saveConnections()
     }
 
     func updateConnection(_ connection: SMBConnection) {
         guard let index = connections.firstIndex(where: { $0.id == connection.id }) else { return }
+        let oldPassword = connections[index].password
         connections[index] = connection
+        if connection.password.isEmpty {
+            KeychainHelper.deletePassword(forConnectionID: connection.id)
+        } else if connection.password != oldPassword {
+            KeychainHelper.savePassword(connection.password, forConnectionID: connection.id)
+        }
         saveConnections()
     }
 
     func deleteConnection(_ id: UUID) {
+        KeychainHelper.deletePassword(forConnectionID: id)
         connections.removeAll { $0.id == id }
         saveConnections()
     }
@@ -86,6 +116,9 @@ class SMBConnectionManager: ObservableObject {
             let data = try Data(contentsOf: url)
             let uuids = try JSONDecoder().decode([UUID].self, from: data)
             activeVolumeUUIDs = Set(uuids)
+            for i in connections.indices {
+                connections[i].isMounted = activeVolumeUUIDs.contains(connections[i].id)
+            }
         } catch {
             activeVolumeUUIDs = []
         }
@@ -117,6 +150,49 @@ class SMBConnectionManager: ObservableObject {
             connections[index].isMounted = false
             saveConnections()
         }
+    }
+
+    /// Verify each "mounted" connection against the system mount table and
+    /// clear any stale entries where the volume has been unmounted externally.
+    func reconcileMountStateWithSystem() {
+        let fm = FileManager.default
+        let bundleID = Bundle.main.bundleIdentifier ?? "com.example.smbkeep"
+        let appSupport = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+        guard let appDir = appSupport?.appendingPathComponent(bundleID) else { return }
+
+        let mountOutput = Self.runMountList()
+        var changed = false
+
+        for i in self.connections.indices {
+            guard self.connections[i].isMounted else { continue }
+            let mountPoint = appDir
+                .appendingPathComponent(self.connections[i].displayName.trimmingCharacters(in: .whitespaces))
+                .path
+            let marker = " on \(mountPoint) "
+            if !mountOutput.contains(marker) {
+                self.connections[i].isMounted = false
+                self.activeVolumeUUIDs.remove(self.connections[i].id)
+                changed = true
+                self.logger.info("Stale mount cleaned: \(self.connections[i].displayName) not in mount table")
+            }
+        }
+
+        if changed {
+            saveConnections()
+            saveActiveMounts()
+        }
+    }
+
+    private static func runMountList() -> String {
+        let task = Process()
+        task.launchPath = "/sbin/mount"
+        task.arguments = []
+        let pipe = Pipe()
+        task.standardOutput = pipe
+        task.standardError = Pipe()
+        try? task.run()
+        task.waitUntilExit()
+        return String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
     }
 
     // MARK: - Mount Source Config
@@ -156,6 +232,7 @@ class SMBConnectionManager: ObservableObject {
             "connectionID": connection.id.uuidString,
             "serverURL": connection.serverURL,
             "shareName": connection.shareName,
+            "startingPath": connection.startingPath,
             "username": connection.username,
             "password": connection.password,
             "operationTimeout": "\(connection.operationTimeout)",

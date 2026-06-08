@@ -16,7 +16,7 @@ struct ConnectionListView: View {
     var body: some View {
         NavigationSplitView {
             listContent
-                .navigationTitle("SMB 连接")
+                .navigationTitle("SMB Keeper")
                 .toolbar { toolbarContent }
         } detail: {
             detailContent
@@ -82,6 +82,8 @@ struct ConnectionListView: View {
 
 struct ConnectionRow: View {
     let connection: SMBConnection
+    @EnvironmentObject var connectionManager: SMBConnectionManager
+    @State private var showingDeleteConfirmation = false
 
     var body: some View {
         HStack {
@@ -102,6 +104,21 @@ struct ConnectionRow: View {
             }
         }
         .padding(.vertical, 2)
+        .contextMenu {
+            if !connection.isMounted {
+                Button("删除", role: .destructive) {
+                    showingDeleteConfirmation = true
+                }
+            }
+        }
+        .confirmationDialog("删除连接", isPresented: $showingDeleteConfirmation) {
+            Button("删除", role: .destructive) {
+                connectionManager.deleteConnection(connection.id)
+            }
+            Button("取消", role: .cancel) { }
+        } message: {
+            Text("确定要删除连接「\(connection.displayName)」吗？此操作不可撤销。")
+        }
     }
 }
 
@@ -112,6 +129,7 @@ struct ConnectionDetailView: View {
     @EnvironmentObject var mountManager: MountManager
     let connection: SMBConnection
     @State private var showingEditSheet = false
+    @State private var showingDeleteConfirmation = false
     private var liveConnection: SMBConnection {
         connectionManager.connections.first(where: { $0.id == connection.id }) ?? connection
     }
@@ -131,7 +149,24 @@ struct ConnectionDetailView: View {
             ConnectionEditView(connection: .constant(liveConnection),
                                existingConnections: connectionManager.connections) { updatedConn in
                 connectionManager.updateConnection(updatedConn)
+                if updatedConn.isMounted {
+                    Task {
+                        let unmounted = await mountManager.unmount(connection: updatedConn)
+                        if unmounted {
+                            try? await Task.sleep(nanoseconds: 1_000_000_000)
+                            await mountManager.mount(connection: updatedConn)
+                        }
+                    }
+                }
             }
+        }
+        .confirmationDialog("删除连接", isPresented: $showingDeleteConfirmation) {
+            Button("删除", role: .destructive) {
+                connectionManager.deleteConnection(connection.id)
+            }
+            Button("取消", role: .cancel) { }
+        } message: {
+            Text("确定要删除连接「\(liveConnection.displayName)」吗？此操作不可撤销。")
         }
     }
 

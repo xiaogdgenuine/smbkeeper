@@ -128,16 +128,12 @@ class MountManager: ObservableObject {
             // Try 1: mount with short name "smbkeep" (from Info.plist FSShortName)
             ("mount -F -t smbkeep",
              "/sbin/mount -F -t smbkeep \"\(sourceDir)\" \"\(mountPoint)\" 2>&1"),
-
-            // Try 2: activate developer mode first then mount
-            ("systemextensionsctl + mount",
-             "systemextensionsctl developer on 2>/dev/null; /sbin/mount -F -t smbkeep \"\(sourceDir)\" \"\(mountPoint)\" 2>&1"),
         ]
 
         for (name, cmd) in commands {
             logger.info("Trying \(name)...")
             let output = await runShellCommand(cmd)
-            mountOutput += "=== \(name) ===\n\(output)\n\n"
+            mountOutput += "=== \(name) ===\n=== \(cmd) ===\n\(output)\n\n"
 
             let lower = output.lowercased()
             if !lower.contains("failed") && !lower.contains("error") && !lower.contains("not found")
@@ -180,12 +176,7 @@ class MountManager: ObservableObject {
             lastError = """
                 所有自动挂载方法均失败。
 
-                请确保：
-                1. 系统扩展已被批准：打开「系统设置 → 隐私与安全性」
-                2. 尝试手动挂载：
-                   /sbin/mount -F -t smbkeep "\(sourceDir)" "\(mountPoint)"
-                3. 检查系统扩展是否已启用：
-                   systemextensionsctl list
+                请确保系统扩展已被批准：打开「系统设置 → 通用 → 登陆项与扩展 → 扩展 → 按类别 → 文件系统扩展 → ⓘ → 启用 SMBKeep File System」
 
                 扩展 Bundle ID: \(extBundleID)
                 """

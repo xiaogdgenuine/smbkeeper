@@ -24,6 +24,7 @@ struct SMBConfiguration {
 
     let serverURL: URL
     let shareName: String
+    let startingPath: String
     let username: String
     let password: String
     let volumeNameSuffix: String
@@ -60,6 +61,7 @@ struct SMBConfiguration {
             let config = SMBConfiguration(
                 serverURL: serverURL,
                 shareName: json["shareName"] ?? "",
+                startingPath: (json["startingPath"] ?? "").trimmingCharacters(in: CharacterSet(charactersIn: "/\\")),
                 username: json["username"] ?? "",
                 password: json["password"] ?? "",
                 volumeNameSuffix: defaultVolumeNameSuffix,

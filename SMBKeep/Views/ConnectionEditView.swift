@@ -29,14 +29,39 @@ struct ConnectionEditView: View {
     private var parsedShare: String {
         let components = connectionPath.split(separator: "/", maxSplits: 1)
         if components.count > 1 {
-            let s = String(components[1]).trimmingCharacters(in: .whitespaces)
-            if !s.isEmpty { return s }
+            let rest = String(components[1]).trimmingCharacters(in: .whitespaces)
+            let shareComponents = rest.split(separator: "/", maxSplits: 1)
+            if let first = shareComponents.first {
+                return String(first)
+            }
+        }
+        return parsedServer
+    }
+
+    private var parsedStartingPath: String {
+        let components = connectionPath.split(separator: "/", maxSplits: 1)
+        if components.count > 1 {
+            let rest = String(components[1]).trimmingCharacters(in: .whitespaces)
+            let shareComponents = rest.split(separator: "/", maxSplits: 1)
+            if shareComponents.count > 1 {
+                let subpath = String(shareComponents[1]).trimmingCharacters(in: .whitespaces)
+                return subpath.trimmingCharacters(in: CharacterSet(charactersIn: "/\\"))
+            }
+        }
+        return ""
+    }
+
+    private var parsedFullPath: String {
+        let components = connectionPath.split(separator: "/", maxSplits: 1)
+        if components.count > 1 {
+            let path = String(components[1]).trimmingCharacters(in: .whitespaces)
+            if !path.isEmpty { return path }
         }
         return parsedServer
     }
 
     private var autoDisplayName: String {
-        parsedShare
+        parsedFullPath.components(separatedBy: "/").compactMap { $0 == "" ? nil : $0 }.last ?? ""
     }
 
     private var deduplicatedDisplayName: String {
@@ -55,18 +80,16 @@ struct ConnectionEditView: View {
         NavigationStack {
             Form {
                 Section("连接信息") {
-                    TextField("服务器地址/共享名", text: $connectionPath)
-                        .help("例如：192.168.1.4/Root")
-
-                    if !autoDisplayName.isEmpty {
-                        HStack {
-                            Text("名称")
-                                .foregroundStyle(.secondary)
-                            Spacer()
-                            Text(deduplicatedDisplayName)
-                        }
-                        .font(.callout)
+                    HStack {
+                        Text("名称")
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Text(deduplicatedDisplayName)
+                            .foregroundColor(.gray)
                     }
+                    .font(.callout)
+                    TextField("smb://", text: $connectionPath)
+                        .help("格式：服务器/共享名，例如 192.168.1.4/6T。共享名后的子目录路径仅用于生成显示名称")
                 }
 
                 Section("认证信息（可选）") {
@@ -99,10 +122,14 @@ struct ConnectionEditView: View {
             }
             .onAppear {
                 if let conn = connection {
-                    if conn.shareName == conn.serverURL {
-                        connectionPath = conn.serverURL
+                    if conn.shareName == conn.serverURL.replacingOccurrences(of: "smb://", with: "") {
+                        connectionPath = conn.serverURL.replacingOccurrences(of: "smb://", with: "")
                     } else {
-                        connectionPath = "\(conn.serverURL)/\(conn.shareName)"
+                        var path = "\(conn.serverURL.replacingOccurrences(of: "smb://", with: ""))/\(conn.shareName)"
+                        if !conn.startingPath.isEmpty {
+                            path += "/\(conn.startingPath)"
+                        }
+                        connectionPath = path
                     }
                     username = conn.username
                     password = conn.password
@@ -118,11 +145,15 @@ struct ConnectionEditView: View {
     }
 
     private func save() {
+        let server = parsedServer
+        let serverURL = server.hasPrefix("smb://") ? server : "smb://\(server)"
+
         let conn = SMBConnection(
             id: connection?.id ?? UUID(),
             displayName: deduplicatedDisplayName,
-            serverURL: parsedServer,
+            serverURL: serverURL,
             shareName: parsedShare,
+            startingPath: parsedStartingPath,
             username: username.trimmingCharacters(in: .whitespaces),
             password: password,
             mountPath: connection?.mountPath ?? "",

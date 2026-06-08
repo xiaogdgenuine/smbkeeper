@@ -63,10 +63,6 @@ class SMBKeepFileSystem: FSUnaryFileSystem & FSUnaryFileSystemOperations {
     public func loadResource(resource: FSResource, options: FSTaskOptions,
                              replyHandler: @escaping (FSVolume?, (any Error)?) -> Void) {
 
-        for opt in options.taskOptions where opt.contains("-f") {
-            return replyHandler(nil, POSIXError(.ENOTSUP))
-        }
-
         guard let smbConfig = loadConfig(from: resource) else {
             return replyHandler(nil, POSIXError(.EINVAL))
         }

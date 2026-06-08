@@ -66,8 +66,9 @@ class SMBKeepFSVolume: FSVolume,
         self.logger = Logger(subsystem: "com.apple.fskit.SMBKeepFS", category: smbConfig.connectionID)
         // self.localXattrStore = SMBKeepLocalXattrStore(connectionID: smbConfig.connectionID)
 
-        let rootInode = SMBAttributeMapping.inodeForPath("")
-        self.rootItem = SMBKeepFSItem(name: ".", smbPath: "", type: .directory, openFlags: .readOnly, inode: rootInode)
+        let startingPath = smbConfig.startingPath
+        let rootInode = SMBAttributeMapping.inodeForPath(startingPath)
+        self.rootItem = SMBKeepFSItem(name: ".", smbPath: startingPath, type: .directory, openFlags: .readOnly, inode: rootInode)
         self.itemCache = [:]
         self.itemCacheQueue = DispatchQueue(label: "com.apple.fskit.smbkeepfs.itemcache.queue")
         // Derive a stable, per-connection volume ID so multiple connections can be

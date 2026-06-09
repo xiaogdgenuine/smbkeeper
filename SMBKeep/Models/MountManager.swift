@@ -32,7 +32,9 @@ class MountManager: ObservableObject {
 
     /// Mount an SMB share.
     /// Writes the active config then triggers the extension via mount_fskit.
-    func mount(connection: SMBConnection) async -> Bool {
+    /// Pass `silent: true` for unattended (login) mounts: it suppresses the
+    /// admin-authorization fallback that would otherwise show a password prompt.
+    func mount(connection: SMBConnection, silent: Bool = false) async -> Bool {
         isBusy = true
         lastError = nil
         mountOutput = ""
@@ -53,11 +55,12 @@ class MountManager: ObservableObject {
 
         let mountPoint = mountPoint(for: connection).path
 
-        // Register the extension before mounting to avoid extensionKit error 2.
-        await registerExtension()
+        // Register the extension before mounting to avoid stale ExtensionKit /
+        // FSKit state after rebuilding or replacing the app.
+        await registerExtension(extBundleID: extBundleID)
 
         // Try multiple approaches to mount.
-        let result = await runMountCommand(extBundleID: extBundleID, sourceDir: sourceDir.path, mountPoint: mountPoint, connection: connection)
+        let result = await runMountCommand(extBundleID: extBundleID, sourceDir: sourceDir.path, mountPoint: mountPoint, connection: connection, silent: silent)
 
         if result {
             // The extension has already read the config in loadResource, so wipe
@@ -108,18 +111,38 @@ class MountManager: ObservableObject {
         return mainBundleID + ".AppEx"
     }
 
-    private func registerExtension() async {
-        guard let extBundleID = Bundle.main.object(forInfoDictionaryKey: "EXTENSION_BUNDLE_ID") as? String
+    private func registerExtension(extBundleID: String? = nil) async {
+        guard let extBundleID = extBundleID
+                ?? Bundle.main.object(forInfoDictionaryKey: "EXTENSION_BUNDLE_ID") as? String
                 ?? guessExtensionBundleID() else {
             return
         }
+
+        if let extensionURL = embeddedExtensionURL() {
+            let registerOutput = await runShellCommand("pluginkit -a \(shellQuoted(extensionURL.path)) 2>&1")
+            mountOutput += "=== pluginkit register ===\n\(registerOutput)\n"
+        }
+
         // Disable and re-enable to force fskitd to release stale state.
         _ = await runShellCommand("pluginkit -e ignore -i \"\(extBundleID)\" 2>&1")
         let enableOutput = await runShellCommand("pluginkit -e use -i \"\(extBundleID)\" 2>&1")
         mountOutput += "=== pluginkit refresh ===\n\(enableOutput)\n"
     }
 
-    private func runMountCommand(extBundleID: String, sourceDir: String, mountPoint: String, connection: SMBConnection) async -> Bool {
+    private func embeddedExtensionURL() -> URL? {
+        let extensionName = Bundle.main.object(forInfoDictionaryKey: "EXTENSION_NAME") as? String ?? "SMBKeepAppEx.appex"
+        let candidates = [
+            Bundle.main.bundleURL
+                .appendingPathComponent("Contents")
+                .appendingPathComponent("Extensions")
+                .appendingPathComponent(extensionName),
+            Bundle.main.builtInPlugInsURL?.appendingPathComponent(extensionName),
+        ].compactMap { $0 }
+
+        return candidates.first { FileManager.default.fileExists(atPath: $0.path) }
+    }
+
+    private func runMountCommand(extBundleID: String, sourceDir: String, mountPoint: String, connection: SMBConnection, silent: Bool = false) async -> Bool {
         // FSKit extensions use the mount command with the FSShortName "smbkeep"
         // from the extension's Info.plist. The `-F` flag forces FSKit routing,
         // and the source argument is the per-connection config directory, which
@@ -150,13 +173,18 @@ class MountManager: ObservableObject {
             }
         }
 
-        if mountOutput.contains("extensionKit.errorDomain") {
+        let lowerMountOutput = mountOutput.lowercased()
+        let staleFSKitState = lowerMountOutput.contains("extensionkit.errordomain")
+            || lowerMountOutput.contains("file system named")
+            || lowerMountOutput.contains("filesystem named")
+        if staleFSKitState && !silent {
             // fskitd is holding stale state. Restart it via admin auth prompt,
             // then retry the mount once.
             let killed = await runShellCommand("osascript -e 'do shell script \"killall fskitd\" with administrator privileges' 2>&1")
             mountOutput += "=== fskitd restart ===\n\(killed)\n\n"
             if !killed.lowercased().contains("error") {
                 try? await Task.sleep(nanoseconds: 2_000_000_000)
+                await registerExtension(extBundleID: extBundleID)
                 for (name, cmd) in commands {
                     logger.info("Retrying \(name) after fskitd restart...")
                     let retryOutput = await runShellCommand(cmd)

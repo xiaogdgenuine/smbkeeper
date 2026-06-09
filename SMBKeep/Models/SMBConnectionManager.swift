@@ -14,10 +14,16 @@ class SMBConnectionManager: ObservableObject {
     @Published var connections: [SMBConnection] = []
     @Published var activeVolumeUUIDs: Set<UUID> = []
 
+    /// Connections the user wants restored at login. Unlike `activeVolumeUUIDs`,
+    /// this set is NOT cleared by `reconcileMountStateWithSystem()`, so it
+    /// survives a reboot (when nothing is mounted yet) and drives auto-mount.
+    @Published var autoMountUUIDs: Set<UUID> = []
+
     private let logger = Logger(subsystem: "com.example.smbkeep.manager", category: "SMBConnectionManager")
 
     static let connectionsFileName = "smb_connections.json"
     static let activeMountsFileName = "active_mounts.json"
+    static let autoMountFileName = "auto_mount.json"
 
     var sharedContainerURL: URL? {
         FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: SMBConnection.appGroupIdentifier)
@@ -31,9 +37,14 @@ class SMBConnectionManager: ObservableObject {
         sharedContainerURL?.appendingPathComponent(Self.activeMountsFileName)
     }
 
+    var autoMountFileURL: URL? {
+        sharedContainerURL?.appendingPathComponent(Self.autoMountFileName)
+    }
+
     init() {
         loadConnections()
         loadActiveMounts()
+        loadAutoMount()
         reconcileMountStateWithSystem()
     }
 
@@ -105,6 +116,9 @@ class SMBConnectionManager: ObservableObject {
     func deleteConnection(_ id: UUID) {
         KeychainHelper.deletePassword(forConnectionID: id)
         connections.removeAll { $0.id == id }
+        if autoMountUUIDs.remove(id) != nil {
+            saveAutoMount()
+        }
         saveConnections()
     }
 
@@ -137,6 +151,9 @@ class SMBConnectionManager: ObservableObject {
     func markMounted(_ connectionID: UUID) {
         activeVolumeUUIDs.insert(connectionID)
         saveActiveMounts()
+        // A successful mount means the user wants this restored at login.
+        autoMountUUIDs.insert(connectionID)
+        saveAutoMount()
         if let index = connections.firstIndex(where: { $0.id == connectionID }) {
             connections[index].isMounted = true
             saveConnections()
@@ -146,9 +163,34 @@ class SMBConnectionManager: ObservableObject {
     func markUnmounted(_ connectionID: UUID) {
         activeVolumeUUIDs.remove(connectionID)
         saveActiveMounts()
+        // An explicit unmount means the user no longer wants it auto-mounted.
+        autoMountUUIDs.remove(connectionID)
+        saveAutoMount()
         if let index = connections.firstIndex(where: { $0.id == connectionID }) {
             connections[index].isMounted = false
             saveConnections()
+        }
+    }
+
+    // MARK: - Auto Mount (login restore)
+
+    func loadAutoMount() {
+        guard let url = autoMountFileURL else { return }
+        do {
+            let data = try Data(contentsOf: url)
+            autoMountUUIDs = Set(try JSONDecoder().decode([UUID].self, from: data))
+        } catch {
+            autoMountUUIDs = []
+        }
+    }
+
+    func saveAutoMount() {
+        guard let url = autoMountFileURL else { return }
+        do {
+            let data = try JSONEncoder().encode(Array(autoMountUUIDs))
+            try data.write(to: url, options: .atomic)
+        } catch {
+            logger.error("Failed to save auto mounts: \(error)")
         }
     }
 

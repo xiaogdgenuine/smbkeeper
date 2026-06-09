@@ -9,8 +9,10 @@ import SwiftUI
 
 @main
 struct SMBKeepApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var connectionManager: SMBConnectionManager
     @StateObject private var mountManager: MountManager
+    @StateObject private var loginItemManager = LoginItemManager()
 
     init() {
         let cm = SMBConnectionManager()
@@ -23,7 +25,7 @@ struct SMBKeepApp: App {
             ContentView()
                 .environmentObject(connectionManager)
                 .environmentObject(mountManager)
-                .frame(minWidth: 700, minHeight: 500)
+                .environmentObject(loginItemManager)
         }
     }
 }

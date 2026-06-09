@@ -10,6 +10,7 @@ import SwiftUI
 struct ConnectionListView: View {
     @EnvironmentObject var connectionManager: SMBConnectionManager
     @EnvironmentObject var mountManager: MountManager
+    @EnvironmentObject var loginItemManager: LoginItemManager
     @State private var showingAddSheet = false
     @State private var selectedConnectionID: UUID?
 
@@ -52,6 +53,21 @@ struct ConnectionListView: View {
 
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
+        ToolbarItem(placement: .automatic) {
+            Menu {
+                Toggle("开机自动挂载", isOn: Binding(
+                    get: { loginItemManager.isEnabled },
+                    set: { loginItemManager.setEnabled($0) }
+                ))
+                if let error = loginItemManager.lastError {
+                    Divider()
+                    Text("登录项设置失败：\(error)")
+                }
+            } label: {
+                Label("设置", systemImage: "gearshape")
+            }
+            .help("登录时在后台自动挂载上次已挂载的连接。密码保存在钥匙串中，不会写入任何启动脚本。")
+        }
         ToolbarItem(placement: .primaryAction) {
             Button(action: { showingAddSheet = true }) {
                 Label("添加", systemImage: "plus")

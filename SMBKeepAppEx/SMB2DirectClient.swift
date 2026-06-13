@@ -6,6 +6,7 @@ Direct libsmb2 client for the passthrough FSKit volume (no AMSMB2 wrapper).
 */
 
 import Foundation
+import Network
 import SMB2
 import OSLog
 
@@ -431,6 +432,7 @@ final class SMB2DirectClient: @unchecked Sendable {
 
         let server = SMB2LibSupport.serverAddress(from: config.serverURL)
         let share = config.shareName
+        preflightNetworkPathOnQueue()
         let result = server.withCString { serverPtr in
             share.withCString { sharePtr in
                 user.withCString { userPtr in
@@ -446,6 +448,59 @@ final class SMB2DirectClient: @unchecked Sendable {
         }
         self.logger.info("libsmb2 connected successfully")
         self.context = ctx
+    }
+
+    /// Warm up the Network.framework path inside the extension process before
+    /// libsmb2 uses legacy BSD sockets. Developer ID FSKit extensions can get a
+    /// different network policy attribution than the containing app, so doing
+    /// this in-process gives us a useful diagnostic and avoids a cold path check.
+    private func preflightNetworkPathOnQueue() {
+        guard let host = config.serverURL.host,
+              let port = NWEndpoint.Port(rawValue: UInt16(config.serverURL.port ?? 445)) else {
+            logger.error("Network preflight skipped: invalid server URL")
+            return
+        }
+
+        let connection = NWConnection(host: NWEndpoint.Host(host), port: port, using: .tcp)
+        let networkQueue = DispatchQueue(label: "com.apple.fskit.smbkeepfs.network-preflight")
+        let semaphore = DispatchSemaphore(value: 0)
+        let lock = NSLock()
+        var didFinish = false
+
+        func finish() {
+            lock.lock()
+            guard !didFinish else {
+                lock.unlock()
+                return
+            }
+            didFinish = true
+            lock.unlock()
+            connection.cancel()
+            semaphore.signal()
+        }
+
+        connection.stateUpdateHandler = { [logger] state in
+            switch state {
+            case .ready:
+                logger.info("Network preflight ready for \(host, privacy: .public):\(port.rawValue, privacy: .public)")
+                finish()
+            case .waiting(let error):
+                logger.error("Network preflight waiting for \(host, privacy: .public):\(port.rawValue, privacy: .public): \(String(describing: error), privacy: .public)")
+            case .failed(let error):
+                logger.error("Network preflight failed for \(host, privacy: .public):\(port.rawValue, privacy: .public): \(String(describing: error), privacy: .public)")
+                finish()
+            case .cancelled:
+                finish()
+            default:
+                break
+            }
+        }
+
+        connection.start(queue: networkQueue)
+        if semaphore.wait(timeout: .now() + 5) == .timedOut {
+            logger.error("Network preflight timed out for \(host, privacy: .public):\(port.rawValue, privacy: .public)")
+            finish()
+        }
     }
 
     private func perform<T>(_ work: (UnsafeMutablePointer<smb2_context>) throws -> T) throws -> T {

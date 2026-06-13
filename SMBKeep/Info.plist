@@ -4,5 +4,7 @@
 <dict>
 	<key>EXTENSION_NAME</key>
 	<string>SMBKeepAppEx.appex</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>SMBKeep needs local network access to connect to SMB file servers.</string>
 </dict>
 </plist>

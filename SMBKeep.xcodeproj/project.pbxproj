@@ -7,11 +7,10 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		77B31DA82FD6E5DF0062CCD7 /* libsmb2 in Frameworks */ = {isa = PBXBuildFile; productRef = 77B31DA72FD6E5DF0062CCD7 /* libsmb2 */; };
-		77B31DA92FD6E5DF0062CCD7 /* libsmb2 in Embed Frameworks */ = {isa = PBXBuildFile; productRef = 77B31DA72FD6E5DF0062CCD7 /* libsmb2 */; settings = {ATTRIBUTES = (CodeSignOnCopy, ); }; };
+		7723AB012FDD36BB001A7A2E /* AMSMB2 in Frameworks */ = {isa = PBXBuildFile; productRef = 7723AB002FDD36BB001A7A2E /* AMSMB2 */; };
+		779585D82FDD6E6C0070FD25 /* AMSMB2 in Embed Frameworks */ = {isa = PBXBuildFile; productRef = 7723AB002FDD36BB001A7A2E /* AMSMB2 */; settings = {ATTRIBUTES = (CodeSignOnCopy, ); }; };
 		D3BA958B2D9D753400FAF4A2 /* SMBKeepAppEx.appex in Embed ExtensionKit Extensions */ = {isa = PBXBuildFile; fileRef = D3BA95812D9D753400FAF4A2 /* SMBKeepAppEx.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		D3BA95932D9D754E00FAF4A2 /* FSKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = D3BA95922D9D754E00FAF4A2 /* FSKit.framework */; };
-		SMB2PKG00012D9D760000FAF4A2 /* libsmb2 in Frameworks */ = {isa = PBXBuildFile; productRef = SMB2PKG00022D9D760000FAF4A2 /* libsmb2 */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -25,13 +24,13 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXCopyFilesBuildPhase section */
-		77B31DAA2FD6E5DF0062CCD7 /* Embed Frameworks */ = {
+		773E85A42FDAD28D004A63DB /* Embed Frameworks */ = {
 			isa = PBXCopyFilesBuildPhase;
 			buildActionMask = 2147483647;
 			dstPath = "";
 			dstSubfolderSpec = 10;
 			files = (
-				77B31DA92FD6E5DF0062CCD7 /* libsmb2 in Embed Frameworks */,
+				779585D82FDD6E6C0070FD25 /* AMSMB2 in Embed Frameworks */,
 			);
 			name = "Embed Frameworks";
 			runOnlyForDeploymentPostprocessing = 0;
@@ -99,7 +98,6 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				77B31DA82FD6E5DF0062CCD7 /* libsmb2 in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -107,7 +105,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				SMB2PKG00012D9D760000FAF4A2 /* libsmb2 in Frameworks */,
+				7723AB012FDD36BB001A7A2E /* AMSMB2 in Frameworks */,
 				D3BA95932D9D754E00FAF4A2 /* FSKit.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -173,7 +171,6 @@
 				D3BA956B2D9D74FC00FAF4A2 /* Frameworks */,
 				D3BA956C2D9D74FC00FAF4A2 /* Resources */,
 				D3BA95902D9D753400FAF4A2 /* Embed ExtensionKit Extensions */,
-				77B31DAA2FD6E5DF0062CCD7 /* Embed Frameworks */,
 			);
 			buildRules = (
 			);
@@ -195,6 +192,7 @@
 				D3BA957D2D9D753400FAF4A2 /* Sources */,
 				D3BA957E2D9D753400FAF4A2 /* Frameworks */,
 				D3BA957F2D9D753400FAF4A2 /* Resources */,
+				773E85A42FDAD28D004A63DB /* Embed Frameworks */,
 			);
 			buildRules = (
 			);
@@ -205,7 +203,7 @@
 			);
 			name = SMBKeepAppEx;
 			packageProductDependencies = (
-				SMB2PKG00022D9D760000FAF4A2 /* libsmb2 */,
+				7723AB002FDD36BB001A7A2E /* AMSMB2 */,
 			);
 			productName = appex;
 			productReference = D3BA95812D9D753400FAF4A2 /* SMBKeepAppEx.appex */;
@@ -239,7 +237,7 @@
 			);
 			mainGroup = D3BA95652D9D74FC00FAF4A2;
 			packageReferences = (
-				SMB2PKG00032D9D760000FAF4A2 /* XCLocalSwiftPackageReference ".deps/AMSMB2" */,
+				7723AAFF2FDD36BB001A7A2E /* XCLocalSwiftPackageReference "deps/AMSMB2" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = D3BA956F2D9D74FC00FAF4A2 /* Products */;
@@ -427,7 +425,7 @@
 				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 3;
 				DEVELOPMENT_TEAM = LD9DHUY7M9;
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_PREVIEWS = YES;
@@ -473,7 +471,7 @@
 				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 3;
 				DEVELOPMENT_TEAM = LD9DHUY7M9;
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_PREVIEWS = YES;
@@ -515,7 +513,7 @@
 				CODE_SIGN_ENTITLEMENTS = SMBKeepAppEx/SMBKeepAppEx.entitlements;
 				CODE_SIGN_IDENTITY = "Mac Developer";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 3;
 				DEVELOPMENT_TEAM = LD9DHUY7M9;
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_RESOURCE_ACCESS_AUDIO_INPUT = NO;
@@ -559,7 +557,7 @@
 				CODE_SIGN_ENTITLEMENTS = SMBKeepAppEx/SMBKeepAppEx.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 3;
 				DEVELOPMENT_TEAM = LD9DHUY7M9;
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_RESOURCE_ACCESS_AUDIO_INPUT = NO;
@@ -628,22 +626,16 @@
 /* End XCConfigurationList section */
 
 /* Begin XCLocalSwiftPackageReference section */
-		SMB2PKG00032D9D760000FAF4A2 /* XCLocalSwiftPackageReference ".deps/AMSMB2" */ = {
+		7723AAFF2FDD36BB001A7A2E /* XCLocalSwiftPackageReference "deps/AMSMB2" */ = {
 			isa = XCLocalSwiftPackageReference;
-			relativePath = .deps/AMSMB2;
+			relativePath = deps/AMSMB2;
 		};
 /* End XCLocalSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
-		77B31DA72FD6E5DF0062CCD7 /* libsmb2 */ = {
+		7723AB002FDD36BB001A7A2E /* AMSMB2 */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = SMB2PKG00032D9D760000FAF4A2 /* XCLocalSwiftPackageReference ".deps/AMSMB2" */;
-			productName = libsmb2;
-		};
-		SMB2PKG00022D9D760000FAF4A2 /* libsmb2 */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = SMB2PKG00032D9D760000FAF4A2 /* XCLocalSwiftPackageReference ".deps/AMSMB2" */;
-			productName = libsmb2;
+			productName = AMSMB2;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

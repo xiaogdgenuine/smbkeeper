@@ -15,19 +15,19 @@ enum AutoMountService {
     private static let logger = Logger(subsystem: "com.example.smbkeep.automount", category: "AutoMountService")
 
     /// Mount every connection the user had mounted last (tracked in
-    /// `autoMountUUIDs`). Runs silently: no UI, no admin prompt.
-    static func mountSavedConnections() async {
+    /// `autoMountUUIDs`). Runs silently when `silent` is true (no admin prompt).
+    static func mountSavedConnections(silent: Bool = true) async {
         let manager = SMBConnectionManager()
         let mounter = MountManager(manager: manager)
 
         let targets = manager.connections.filter {
-            manager.autoMountUUIDs.contains($0.id) && !$0.isMounted
+            !$0.isMounted
         }
 
         logger.info("Login auto-mount: \(targets.count) target(s)")
 
         for connection in targets {
-            let ok = await mounter.mount(connection: connection, silent: true)
+            let ok = await mounter.mount(connection: connection, silent: silent)
             logger.info("Auto-mount \(connection.displayName, privacy: .public): \(ok ? "ok" : "failed")")
         }
     }

@@ -25,8 +25,20 @@ class SMBConnectionManager: ObservableObject {
     static let activeMountsFileName = "active_mounts.json"
     static let autoMountFileName = "auto_mount.json"
 
+    /// App-owned storage for connection/state JSON. The App Group container was
+    /// dropped: the FSKit extension sandbox can't read it, and the non-sandboxed
+    /// app doesn't need it, so an unprovisioned app-group entitlement only
+    /// produced "entitlement ignored" warnings. We reuse the same Application
+    /// Support directory that already holds `mount-sources`.
     var sharedContainerURL: URL? {
-        FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: SMBConnection.appGroupIdentifier)
+        let fm = FileManager.default
+        guard let appSupport = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
+            return nil
+        }
+        let bundleID = Bundle.main.bundleIdentifier ?? "com.example.smbkeep"
+        let dir = appSupport.appendingPathComponent(bundleID)
+        try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
     }
 
     var connectionsFileURL: URL? {

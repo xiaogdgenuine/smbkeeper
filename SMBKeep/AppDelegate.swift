@@ -13,19 +13,23 @@ import OSLog
 final class AppDelegate: NSObject, NSApplicationDelegate {
     /// True when this process was started by the system as a login item
     /// (as opposed to being opened manually by the user).
-    static private(set) var launchedAsLoginItem = false
+    static var launchedAsLoginItem = false
 
     private let logger = Logger(subsystem: "com.example.smbkeep.app", category: "AppDelegate")
 
     func applicationWillFinishLaunching(_ notification: Notification) {
-        AppDelegate.launchedAsLoginItem = Self.detectLoginItemLaunch()
-        if AppDelegate.launchedAsLoginItem {
-            // No Dock icon / no menu bar for the unattended mount pass.
-            NSApp.setActivationPolicy(.accessory)
+        if Self.detectLoginItemLaunch() {
+            Self.enterLoginItemMode()
         }
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // On some launches the Apple Event is not current until the app is
+        // finishing launch, so do the definitive check here as well.
+        if Self.detectLoginItemLaunch() {
+            Self.enterLoginItemMode()
+        }
+
         guard AppDelegate.launchedAsLoginItem else { return }
         logger.info("Launched as login item; running silent auto-mount")
 
@@ -39,6 +43,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // The FSKit extension owns the live mount, so the app can exit now.
             NSApp.terminate(nil)
         }
+    }
+
+    private static func enterLoginItemMode() {
+        AppDelegate.launchedAsLoginItem = true
+        // No Dock icon / no menu bar for the unattended mount pass.
+        NSApp.setActivationPolicy(.accessory)
     }
 
     /// A login-item launch arrives as a `kAEOpenApplication` Apple event whose

@@ -12,9 +12,8 @@
 所有可变状态都限定在 `loop` 上访问。
 
 多个请求可以同时在途（SMB2 在同一条连接上对它们多路复用），因此一个慢的或卡住的
-read 不再阻塞元数据操作。网络变化时我们直接销毁 context：`smb2_destroy_context`
-会用 `SMB2_STATUS_SHUTDOWN` 调用每个在途请求的回调，于是在途操作立即失败，
-而不是傻等超时。
+read 不再阻塞元数据操作。网络变化时我们直接销毁 context，再用不触碰已销毁
+context 的路径失败所有在途操作，于是调用方立即返回错误，而不是傻等超时。
 */
 
 import Foundation
@@ -55,10 +54,14 @@ final class SMB2DirectClient: @unchecked Sendable {
     private let config: SMBConfiguration
     private let logger: TimestampedLogger
 
-    /// 在途请求，以单调递增的 id 为键。存储的闭包负责解释 libsmb2 的 status/command-data，
-    /// 并且只 resume 等待中的 continuation 一次。
+    /// 在途请求，以单调递增的 id 为键。正常完成可以读取仍然存活的 `smb2_context`；
+    /// 断线拆除时则必须走不触碰 context 的失败路径，避免 `smb2_destroy_context` 后再解引用野指针。
+    private struct PendingRequest {
+        let complete: (Int32, UnsafeMutableRawPointer?) -> Void
+        let failAfterContextDestroyed: () -> Void
+    }
     private var nextID: UInt64 = 1
-    private var pending: [UInt64: (Int32, UnsafeMutableRawPointer?) -> Void] = [:]
+    private var pending: [UInt64: PendingRequest] = [:]
 
     /// 以 SMB 路径为键的已打开文件句柄，在多次 read/write 调用间复用。
     private struct CachedHandle {
@@ -154,22 +157,28 @@ final class SMB2DirectClient: @unchecked Sendable {
                 let id = self.nextID
                 self.nextID &+= 1
                 let raw = Unmanaged.passRetained(SMB2RequestToken(id: id, client: self)).toOpaque()
-                self.pending[id] = { status, _ in
-                    self.cancelConnectDeadline()
-                    if status < 0 {
-                        let err = SMB2LibSupport.posixError(fromContext: self.context, code: status)
-                        self.logger.error("libsmb2 connect failed: \(err)")
-                        // 这个完成回调是在处理 connect 握手期间 *在 smb2_service 内部* 运行的，
-                        // 所以不要在这里销毁 context（会 use-after-free）。把 teardown 延后执行。
-                        self.loop.async { self.teardownContext() }
-                        cont.resume(throwing: err)
-                    } else {
-                        self.logger.debug("libsmb2 connected to \(self.config.shareName)")
-                        self.lastConnectSuccessAt = .now()
-                        self.startTick()
-                        cont.resume()
+                self.pending[id] = PendingRequest(
+                    complete: { status, _ in
+                        self.cancelConnectDeadline()
+                        if status < 0 {
+                            let err = SMB2LibSupport.posixError(fromContext: self.context, code: status)
+                            self.logger.error("libsmb2 connect failed: \(err)")
+                            // 这个完成回调是在处理 connect 握手期间 *在 smb2_service 内部* 运行的，
+                            // 所以不要在这里销毁 context（会 use-after-free）。把 teardown 延后执行。
+                            self.loop.async { self.teardownContext() }
+                            cont.resume(throwing: err)
+                        } else {
+                            self.logger.debug("libsmb2 connected to \(self.config.shareName)")
+                            self.lastConnectSuccessAt = .now()
+                            self.startTick()
+                            cont.resume()
+                        }
+                    },
+                    failAfterContextDestroyed: {
+                        self.cancelConnectDeadline()
+                        cont.resume(throwing: POSIXError(.ENOTCONN))
                     }
-                }
+                )
 
                 let server = SMB2LibSupport.serverAddress(from: self.config.serverURL)
                 let rc = server.withCString { s in
@@ -255,8 +264,8 @@ final class SMB2DirectClient: @unchecked Sendable {
 
     private func performReconnect() async -> Bool {
         self.logger.debug("libsmb2 reconnecting to \(self.config.serverURL)/\(self.config.shareName)")
-        // 先拆掉（假定已死的）context；这会通过 SMB2_STATUS_SHUTDOWN 立即让所有在途请求失败，
-        // 而不是在一个已死的 socket 上傻等。
+        // 先拆掉（假定已死的）context；teardown 会在 libsmb2 完成内部收尾后，
+        // 用不触碰旧 context 的路径立即失败所有在途请求。
         await awaitOnLoop { self.teardownContext() }
         do {
             try await connect()
@@ -364,9 +373,8 @@ final class SMB2DirectClient: @unchecked Sendable {
     }
 
     /// 装上一次性的连接兜底。如果 `id` 对应的 connect 在 `connectDeadline` 之前还没完成，
-    /// 就销毁 context：这会触发那个在途的 connect 回调（带 SHUTDOWN/CANCELLED），
-    /// 从而释放请求令牌，并以错误 resume 正在等待的 `connect()`。运行在 `loop` 上，
-    /// 所以绝不会与同一队列上并发的 `smb2_service` 竞争。
+    /// 就销毁 context，并通过 teardown 的断线失败路径 resume 正在等待的 `connect()`。
+    /// 运行在 `loop` 上，所以绝不会与同一队列上并发的 `smb2_service` 竞争。
     private func armConnectDeadline(id: UInt64) {
         cancelConnectDeadline()
         let timer = DispatchSource.makeTimerSource(queue: loop)
@@ -426,9 +434,12 @@ final class SMB2DirectClient: @unchecked Sendable {
         let raw = Unmanaged.passRetained(SMB2RequestToken(id: id, client: self)).toOpaque()
         // echo 仅用于保活；失败不在这里主动重连，留给下一次真实操作懒重连，
         // 避免“销毁旧 context → echo 失败 → 又重连”的循环。
-        self.pending[id] = { [weak self] status, _ in
-            if status < 0 { self?.logger.debug("libsmb2 keepalive echo failed (\(status))") }
-        }
+        self.pending[id] = PendingRequest(
+            complete: { [weak self] status, _ in
+                if status < 0 { self?.logger.debug("libsmb2 keepalive echo failed (\(status))") }
+            },
+            failAfterContextDestroyed: {}
+        )
         let rc = smb2_echo_async(ctx, smb2RequestCompletion, raw)
         if self.pending[id] != nil {
             if rc < 0 {
@@ -446,16 +457,16 @@ final class SMB2DirectClient: @unchecked Sendable {
         cancelConnectDeadline()
         disposeSources()
         if let ctx = self.context {
-            // 不再只依赖 smb2_destroy_context 回调所有在途请求。实际网络切换时，
-            // 如果某个请求没有被 libsmb2 回调，FSKit 的 replyHandler 就永远不执行，
-            // Finder 会一直卡在 getattrlist / readdir。这里先主动失败所有 pending。
+            // 先从字典中取出请求并销毁 context，让 libsmb2 有机会完成内部收尾。
+            // 之后再用不触碰 context 的失败路径唤醒调用方，避免提前释放 read/write 缓冲区
+            // 后 `smb2_destroy_context` 仍通过在途 PDU 访问它们。
             let requests = self.pending
             self.pending.removeAll(keepingCapacity: true)
-            for (_, completion) in requests {
-                completion(-Int32(ENOTCONN), nil)
-            }
             self.context = nil
             smb2_destroy_context(ctx)
+            for (_, request) in requests {
+                request.failAfterContextDestroyed()
+            }
         }
         // 这些 fh 结构由（现已销毁的）context 拥有；直接丢弃引用即可。
         handles.removeAll()
@@ -472,8 +483,8 @@ final class SMB2DirectClient: @unchecked Sendable {
     // MARK: - 请求完成汇集点（运行在 `loop` 上）
 
     fileprivate func completeRequest(id: UInt64, status: Int32, commandData: UnsafeMutableRawPointer?) {
-        guard let completion = pending.removeValue(forKey: id) else { return }
-        completion(status, commandData)
+        guard let request = pending.removeValue(forKey: id) else { return }
+        request.complete(status, commandData)
     }
 
     // MARK: - 通用 submit
@@ -497,11 +508,17 @@ final class SMB2DirectClient: @unchecked Sendable {
                 let id = self.nextID
                 self.nextID &+= 1
                 let raw = Unmanaged.passRetained(SMB2RequestToken(id: id, client: self)).toOpaque()
-                self.pending[id] = { status, commandData in
-                    let result = interpret(status, commandData, ctx)
-                    cleanup?()
-                    cont.resume(with: result)
-                }
+                self.pending[id] = PendingRequest(
+                    complete: { status, commandData in
+                        let result = interpret(status, commandData, ctx)
+                        cleanup?()
+                        cont.resume(with: result)
+                    },
+                    failAfterContextDestroyed: {
+                        cleanup?()
+                        cont.resume(throwing: POSIXError(.ENOTCONN))
+                    }
+                )
                 let rc = prepare(ctx, raw)
                 // 如果回调已经同步触发（libsmb2 某些错误路径会这样），
                 // 那么 `pending[id]` 已被移除，一切都已处理完毕。
@@ -565,9 +582,14 @@ final class SMB2DirectClient: @unchecked Sendable {
         let id = self.nextID
         self.nextID &+= 1
         let raw = Unmanaged.passRetained(SMB2RequestToken(id: id, client: self)).toOpaque()
-        self.pending[id] = { status, commandData in
-            self.finishOpen(path: path, openedWritable: wantWrite, status: status, commandData: commandData)
-        }
+        self.pending[id] = PendingRequest(
+            complete: { status, commandData in
+                self.finishOpen(path: path, openedWritable: wantWrite, status: status, commandData: commandData)
+            },
+            failAfterContextDestroyed: {
+                self.failOpenWaiters(path: path, error: POSIXError(.ENOTCONN))
+            }
+        )
         let rc = path.withCString { smb2_open_async(ctx, $0, flags, smb2RequestCompletion, raw) }
         if self.pending[id] != nil {
             if rc < 0 {
@@ -631,7 +653,10 @@ final class SMB2DirectClient: @unchecked Sendable {
         let id = self.nextID
         self.nextID &+= 1
         let raw = Unmanaged.passRetained(SMB2RequestToken(id: id, client: self)).toOpaque()
-        self.pending[id] = { _, _ in }
+        self.pending[id] = PendingRequest(
+            complete: { _, _ in },
+            failAfterContextDestroyed: {}
+        )
         let rc = smb2_close_async(ctx, fh, smb2RequestCompletion, raw)
         if self.pending[id] != nil {
             if rc < 0 {

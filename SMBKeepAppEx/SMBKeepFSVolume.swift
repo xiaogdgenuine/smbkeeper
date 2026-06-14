@@ -150,11 +150,13 @@ class SMBKeepFSVolume: FSVolume,
                 do {
                     let snapshot = ptItem.stateSnapshot()
                     let data = try await self.smb.read(path: snapshot.smbPath, offset: UInt64(offset), length: length)
-                    let copyLen = min(data.count, length)
+                    var copied = 0
                     buffer.withUnsafeMutableBytes { raw in
-                        data.copyBytes(to: raw.bindMemory(to: UInt8.self).baseAddress!, count: copyLen)
+                        copied = min(data.count, length, raw.count)
+                        guard copied > 0, let base = raw.bindMemory(to: UInt8.self).baseAddress else { return }
+                        data.copyBytes(to: base, count: copied)
                     }
-                    return replyHandler(copyLen, nil)
+                    return replyHandler(copied, nil)
                 } catch {
                     if !recoveredOnce, await self.recoverFromConnectionLoss(error) {
                         recoveredOnce = true

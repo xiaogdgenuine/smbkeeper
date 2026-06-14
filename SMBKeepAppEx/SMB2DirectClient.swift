@@ -93,6 +93,19 @@ final class SMB2DirectClient: @unchecked Sendable {
     // 单飞（single-flight）重连：用信号量保证同一时刻只有一个重连在跑。
     private let reconnectSemaphore = AsyncSemaphore(value: 1)
 
+    // 重连熔断（只在 `loop` 上访问）：连续失败到上限后暂停重连，直到网络发生变化才恢复。
+    // 用户可能带着电脑离开了网络，这时一直反复重连只会白白耗电、毫无意义。
+    private var consecutiveReconnectFailures = 0
+    private var reconnectSuspended = false
+    private static let maxReconnectFailures = 5
+
+    // 刚建连接的复用窗口（只在 `loop` 上访问）：记录最近一次连接成功的时刻。
+    // 网络恢复瞬间常有一批针对“旧连接”的失败几乎同时涌进来，它们都会调用 reconnect()；
+    // 只要此刻已经有人重连出一个“刚刚建立”的活动连接，就直接复用，绝不能再 teardown 一遍，
+    // 否则会把刚建好的健康连接拆掉，触发又一轮长达十几秒的重连。
+    private var lastConnectSuccessAt: DispatchTime?
+    private static let freshConnectionReuseWindow: TimeInterval = 2
+
     /// 固定的 libsmb2 单操作超时（秒）。局域网 SMB 很快，因此用一个短而统一的截止时间
     /// 来限制卡住的请求在被 libsmb2 中止前能拖多久；单次 SMB RPC 正常情况下绝不需要更久。
     private static let operationTimeout: Int32 = 10
@@ -152,6 +165,7 @@ final class SMB2DirectClient: @unchecked Sendable {
                         cont.resume(throwing: err)
                     } else {
                         self.logger.debug("libsmb2 connected to \(self.config.shareName)")
+                        self.lastConnectSuccessAt = .now()
                         self.startTick()
                         cont.resume()
                     }
@@ -206,7 +220,37 @@ final class SMB2DirectClient: @unchecked Sendable {
         if let current, current != previous {
             return true
         }
-        return await performReconnect()
+
+        // 复用窗口：即便 context 指针没变（这次失败可能来自“旧连接”，而新连接刚好也在此刻建好），
+        // 只要当前有一个“刚刚建立”的活动连接，就直接复用、不要再拆掉重连。这能把网络恢复瞬间
+        // 涌进来的一批旧连接失败合并掉，避免把刚建好的健康连接误拆、再白等一轮十几秒的重连。
+        let hasFreshConnection = await awaitOnLoop { () -> Bool in
+            guard self.context != nil, let last = self.lastConnectSuccessAt else { return false }
+            return DispatchTime.now() < last + Self.freshConnectionReuseWindow
+        }
+        if hasFreshConnection {
+            return true
+        }
+
+        // 熔断：连续失败到上限、且期间网络没有任何变化，就不再重试，直接放弃。
+        // 等到 `handleNetworkChange()`（网络变化/唤醒）时再解除熔断恢复重试。
+        if await awaitOnLoop({ self.reconnectSuspended }) {
+            return false
+        }
+
+        let ok = await performReconnect()
+        await awaitOnLoop {
+            if ok {
+                self.consecutiveReconnectFailures = 0
+            } else {
+                self.consecutiveReconnectFailures += 1
+                if self.consecutiveReconnectFailures >= Self.maxReconnectFailures {
+                    self.reconnectSuspended = true
+                    self.logger.error("libsmb2 reconnect suspended after \(self.consecutiveReconnectFailures) consecutive failures; will resume on network change")
+                }
+            }
+        }
+        return ok
     }
 
     private func performReconnect() async -> Bool {
@@ -342,6 +386,25 @@ final class SMB2DirectClient: @unchecked Sendable {
     private func cancelConnectDeadline() {
         connectDeadlineTimer?.cancel()
         connectDeadlineTimer = nil
+    }
+
+    /// 网络配置发生变化（或系统唤醒）时调用。做两件事：
+    /// 1) 解除重连熔断、清零连续失败计数——网络变了，值得重新尝试连接。
+    /// 2) 若此刻正有一次 connect 握手在途（`connectDeadlineTimer != nil`），立刻把它拆掉：
+    ///    在途的 connect 往往卡在已失效的旧路由上，会一直耗到截止时间才放弃；主动中止后，
+    ///    上层的重试就能在新网络上立刻发起全新的 connect。已连好的健康连接不受影响。
+    func handleNetworkChange() {
+        loop.async {
+            if self.reconnectSuspended {
+                self.logger.debug("libsmb2 resuming reconnects after network change")
+            }
+            self.reconnectSuspended = false
+            self.consecutiveReconnectFailures = 0
+            if self.connectDeadlineTimer != nil {
+                self.logger.debug("libsmb2 aborting in-flight connect due to network change")
+                self.teardownContext()
+            }
+        }
     }
 
     private func tick() {

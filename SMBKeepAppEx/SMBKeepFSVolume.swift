@@ -82,9 +82,13 @@ class SMBKeepFSVolume: FSVolume,
             self?.handleSystemDidWake()
         }
         self.networkMonitor = SystemNetworkMonitor(logger: self.logger) { [weak self] in
-            // 网络变化只清缓存、不主动重连：切 Wi-Fi 时系统会连续抛出很多次网络事件，
-            // 若每次都 teardown+重连，会把刚建好的健康连接反复拆掉。重连交给下一次
-            // 文件操作里的 recoverFromConnectionLoss（信号量单飞）按需处理。
+            // 网络变化时：
+            // 1) 解除重连熔断、并中止可能卡在旧路由上的在途 connect——否则它会一直耗到截止时间
+            //    才放弃，白白拖慢切回网络后的恢复；中止后重试会在新网络上发起全新的 connect。
+            // 2) 清缓存，让下一次枚举重新向服务器拉取。
+            // 不在这里主动重连：重连仍交给下一次文件操作（recoverFromConnectionLoss，信号量单飞），
+            // 避免把刚建好的健康连接反复拆掉重连。
+            self?.smb.handleNetworkChange()
             self?.clearAllDirectoryCaches()
         }
     }
@@ -323,7 +327,9 @@ class SMBKeepFSVolume: FSVolume,
     }
 
     private func handleSystemDidWake() {
-        // 同网络变化：唤醒后只清缓存，连接是否还活着交给下一次文件操作去验证并按需重连。
+        // 同网络变化：唤醒是重新尝试连接的好时机，解除可能存在的重连熔断并清缓存，
+        // 连接是否还活着交给下一次文件操作去验证并按需重连。
+        self.smb.handleNetworkChange()
         self.clearAllDirectoryCaches()
     }
 }

@@ -28,6 +28,11 @@ final class SMBBackend: @unchecked Sendable {
         client.disconnect()
     }
 
+    /// 网络变化/系统唤醒时调用：解除重连熔断，并中止可能卡在旧路由上的在途 connect。
+    func handleNetworkChange() {
+        client.handleNetworkChange()
+    }
+
     @discardableResult
     func reconnect() async -> Bool {
         await client.reconnect()

@@ -47,7 +47,7 @@ class SMBKeepFSVolume: FSVolume,
     let smb: SMBBackend
     let volumeLabel: String
     let connectionID: String
-    let logger: Logger
+    let logger: TimestampedLogger
 
     /// 创建此卷所用的 SMB 配置。
     let smbConfig: SMBConfiguration
@@ -64,7 +64,7 @@ class SMBKeepFSVolume: FSVolume,
         self.smbConfig = smbConfig
         self.connectionID = smbConfig.connectionID
         self.volumeLabel = volumeName.string ?? smbConfig.displayName
-        self.logger = Logger(subsystem: "com.apple.fskit.SMBKeepFS", category: smbConfig.connectionID)
+        self.logger = TimestampedLogger(subsystem: "com.apple.fskit.SMBKeepFS", category: smbConfig.connectionID)
         // self.localXattrStore = SMBKeepLocalXattrStore(connectionID: smbConfig.connectionID)
 
         let startingPath = smbConfig.startingPath
@@ -75,14 +75,17 @@ class SMBKeepFSVolume: FSVolume,
         // 派生一个稳定的、每连接独立的卷 ID，让多个连接可以同时挂载而不共用同一个标识符。
         let volumeUUID = UUID(uuidString: smbConfig.connectionID) ?? UUID()
         super.init(volumeID: FSVolume.Identifier(uuid: volumeUUID), volumeName: volumeName)
-        self.logger.info("\(#function): Created SMB volume \(self.name)")
+        self.logger.debug("\(#function): Created SMB volume \(self.name)")
         self.log("Volume initialized: \(smbConfig.displayName)")
 
         self.sleepWakeMonitor = SleepWakeMonitor(logger: self.logger) { [weak self] in
             self?.handleSystemDidWake()
         }
         self.networkMonitor = SystemNetworkMonitor(logger: self.logger) { [weak self] in
-            Task { await self?.reconnectAndClearCaches(reason: "network change") }
+            // 网络变化只清缓存、不主动重连：切 Wi-Fi 时系统会连续抛出很多次网络事件，
+            // 若每次都 teardown+重连，会把刚建好的健康连接反复拆掉。重连交给下一次
+            // 文件操作里的 recoverFromConnectionLoss（信号量单飞）按需处理。
+            self?.clearAllDirectoryCaches()
         }
     }
 
@@ -90,7 +93,7 @@ class SMBKeepFSVolume: FSVolume,
 
     /// 向统一日志系统写入一条运行时日志（宿主 App 会实时读取）。
     func log(_ message: String) {
-        self.logger.info("[FSVolume] \(message)")
+        self.logger.debug("[FSVolume] \(message)")
     }
 
     public func setVolumeName(_ name: FSFileName, replyHandler: @escaping (FSFileName?, (any Error)?) -> Void) {
@@ -320,24 +323,8 @@ class SMBKeepFSVolume: FSVolume,
     }
 
     private func handleSystemDidWake() {
-        Task { await self.reconnectAndClearCaches(reason: "wake") }
-    }
-
-    /// 重建 SMB 连接并清除陈旧缓存，失败时按退避策略重试。
-    private func reconnectAndClearCaches(reason: String, attempt: Int = 0) async {
-        if await self.smb.reconnect() {
-            self.clearAllDirectoryCaches()
-            self.logger.info("\(#function): Reconnected SMB after \(reason) (attempt \(attempt))")
-            return
-        }
-
-        let maxAttempts = 5
-        guard attempt < maxAttempts else {
-            self.logger.error("\(#function): Couldn't reconnect SMB after \(reason)")
-            return
-        }
-        try? await Task.sleep(nanoseconds: UInt64(attempt + 1) * 1_000_000_000)
-        await self.reconnectAndClearCaches(reason: reason, attempt: attempt + 1)
+        // 同网络变化：唤醒后只清缓存，连接是否还活着交给下一次文件操作去验证并按需重连。
+        self.clearAllDirectoryCaches()
     }
 }
 
@@ -359,10 +346,10 @@ final class SystemNetworkMonitor {
     private var store: SCDynamicStore?
     private let queue = DispatchQueue(label: "com.apple.fskit.smbkeepfs.network.queue")
     private let onChange: () -> Void
-    private let logger: Logger
+    private let logger: TimestampedLogger
     private var lastSnapshot: String?
 
-    init(logger: Logger, onChange: @escaping () -> Void) {
+    init(logger: TimestampedLogger, onChange: @escaping () -> Void) {
         self.logger = logger
         self.onChange = onChange
         self.queue.async { [weak self] in
@@ -403,7 +390,7 @@ final class SystemNetworkMonitor {
             return
         }
         CFRunLoopAddSource(CFRunLoopGetCurrent(), source, .defaultMode)
-        self.logger.info("\(#function): System network monitor active (SCDynamicStore)")
+        self.logger.debug("\(#function): System network monitor active (SCDynamicStore)")
         CFRunLoopRun()
     }
 
@@ -412,7 +399,7 @@ final class SystemNetworkMonitor {
         let snapshot = Self.captureSnapshot(from: store)
         defer { self.lastSnapshot = snapshot }
         guard self.lastSnapshot != snapshot else { return }
-        self.logger.info("\(#function): Network configuration changed")
+        self.logger.debug("\(#function): Network configuration changed")
         self.onChange()
     }
 
@@ -455,13 +442,13 @@ final class SleepWakeMonitor {
     private static let messageSystemHasPoweredOn: UInt32 = 0xE000_0300
 
     private let onWake: () -> Void
-    private let logger: Logger
+    private let logger: TimestampedLogger
     private let queue = DispatchQueue(label: "com.apple.fskit.smbkeepfs.sleepwake.queue")
     private var rootPort: io_connect_t = 0
     private var notifierObject: io_object_t = 0
     private var notificationPort: IONotificationPortRef?
 
-    init?(logger: Logger, onWake: @escaping () -> Void) {
+    init?(logger: TimestampedLogger, onWake: @escaping () -> Void) {
         self.logger = logger
         self.onWake = onWake
         let context = Unmanaged.passUnretained(self).toOpaque()
@@ -481,7 +468,7 @@ final class SleepWakeMonitor {
         self.notifierObject = notifier
         self.notificationPort = port
         IONotificationPortSetDispatchQueue(port, self.queue)
-        self.logger.info("\(#function): Sleep/wake monitor active")
+        self.logger.debug("\(#function): Sleep/wake monitor active")
     }
 
     private func handle(messageType: UInt32, messageArgument: UnsafeMutableRawPointer?) {

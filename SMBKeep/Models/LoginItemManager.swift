@@ -19,7 +19,7 @@ final class LoginItemManager: ObservableObject {
     @Published private(set) var isEnabled: Bool = false
     @Published var lastError: String?
 
-    private let logger = Logger(subsystem: "com.example.smbkeep.loginitem", category: "LoginItemManager")
+    private let logger = TimestampedLogger(subsystem: "com.example.smbkeep.loginitem", category: "LoginItemManager")
 
     init() {
         refresh()
@@ -41,7 +41,7 @@ final class LoginItemManager: ObservableObject {
             }
             lastError = nil
         } catch {
-            logger.error("Login item toggle failed: \(error.localizedDescription, privacy: .public)")
+            logger.error("Login item toggle failed: \(error.localizedDescription)")
             lastError = error.localizedDescription
         }
         refresh()

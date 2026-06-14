@@ -11,7 +11,7 @@ import OSLog
 
 @MainActor
 enum AutoMountService {
-    private static let logger = Logger(subsystem: "com.example.smbkeep.automount", category: "AutoMountService")
+    private static let logger = TimestampedLogger(subsystem: "com.example.smbkeep.automount", category: "AutoMountService")
 
     /// 挂载用户上次挂载过的所有连接（记录在 `autoMountUUIDs` 中）。
     /// 当 `silent` 为 true 时静默运行（不弹出管理员授权）。
@@ -23,11 +23,11 @@ enum AutoMountService {
             !$0.isMounted
         }
 
-        logger.info("Login auto-mount: \(targets.count) target(s)")
+        logger.debug("Login auto-mount: \(targets.count) target(s)")
 
         for connection in targets {
             let ok = await mounter.mount(connection: connection, silent: silent)
-            logger.info("Auto-mount \(connection.displayName, privacy: .public): \(ok ? "ok" : "failed")")
+            logger.debug("Auto-mount \(connection.displayName): \(ok ? "ok" : "failed")")
         }
     }
 }

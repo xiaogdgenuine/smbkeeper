@@ -9,6 +9,7 @@
 /* Begin PBXBuildFile section */
 		7723AB012FDD36BB001A7A2E /* AMSMB2 in Frameworks */ = {isa = PBXBuildFile; productRef = 7723AB002FDD36BB001A7A2E /* AMSMB2 */; };
 		779585D82FDD6E6C0070FD25 /* AMSMB2 in Embed Frameworks */ = {isa = PBXBuildFile; productRef = 7723AB002FDD36BB001A7A2E /* AMSMB2 */; settings = {ATTRIBUTES = (CodeSignOnCopy, ); }; };
+		77D2E2EF2FDE4D8D00B73F5B /* Semaphore in Frameworks */ = {isa = PBXBuildFile; productRef = 77D2E2EE2FDE4D8D00B73F5B /* Semaphore */; };
 		D3BA958B2D9D753400FAF4A2 /* SMBKeepAppEx.appex in Embed ExtensionKit Extensions */ = {isa = PBXBuildFile; fileRef = D3BA95812D9D753400FAF4A2 /* SMBKeepAppEx.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		D3BA95932D9D754E00FAF4A2 /* FSKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = D3BA95922D9D754E00FAF4A2 /* FSKit.framework */; };
 /* End PBXBuildFile section */
@@ -107,6 +108,7 @@
 			files = (
 				7723AB012FDD36BB001A7A2E /* AMSMB2 in Frameworks */,
 				D3BA95932D9D754E00FAF4A2 /* FSKit.framework in Frameworks */,
+				77D2E2EF2FDE4D8D00B73F5B /* Semaphore in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -204,6 +206,7 @@
 			name = SMBKeepAppEx;
 			packageProductDependencies = (
 				7723AB002FDD36BB001A7A2E /* AMSMB2 */,
+				77D2E2EE2FDE4D8D00B73F5B /* Semaphore */,
 			);
 			productName = appex;
 			productReference = D3BA95812D9D753400FAF4A2 /* SMBKeepAppEx.appex */;
@@ -238,6 +241,7 @@
 			mainGroup = D3BA95652D9D74FC00FAF4A2;
 			packageReferences = (
 				7723AAFF2FDD36BB001A7A2E /* XCLocalSwiftPackageReference "deps/AMSMB2" */,
+				77D2E2ED2FDE4D8D00B73F5B /* XCRemoteSwiftPackageReference "Semaphore" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = D3BA956F2D9D74FC00FAF4A2 /* Products */;
@@ -632,10 +636,26 @@
 		};
 /* End XCLocalSwiftPackageReference section */
 
+/* Begin XCRemoteSwiftPackageReference section */
+		77D2E2ED2FDE4D8D00B73F5B /* XCRemoteSwiftPackageReference "Semaphore" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/groue/Semaphore.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 0.1.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
 /* Begin XCSwiftPackageProductDependency section */
 		7723AB002FDD36BB001A7A2E /* AMSMB2 */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = AMSMB2;
+		};
+		77D2E2EE2FDE4D8D00B73F5B /* Semaphore */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 77D2E2ED2FDE4D8D00B73F5B /* XCRemoteSwiftPackageReference "Semaphore" */;
+			productName = Semaphore;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

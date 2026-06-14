@@ -42,7 +42,7 @@ struct SMBConfiguration {
     static func load(fromSourceDirectory directory: URL) -> SMBConfiguration? {
         let configURL = directory.appendingPathComponent(configFileName)
         guard let data = try? Data(contentsOf: configURL) else {
-            Logger.smbkeepfs.warning("No \(configFileName) at \(configURL.path)")
+            TimestampedLogger.smbkeepfs.warning("No \(configFileName) at \(configURL.path)")
             return nil
         }
         return parse(data: data)
@@ -66,10 +66,10 @@ struct SMBConfiguration {
                 localUID: uid_t(json["localUID"] ?? "\(getuid())") ?? getuid(),
                 localGID: gid_t(json["localGID"] ?? "\(getgid())") ?? getgid()
             )
-            Logger.smbkeepfs.info("Loaded config for \(config.displayName) (\(config.serverURL)/\(config.shareName))")
+            TimestampedLogger.smbkeepfs.info("Loaded config for \(config.displayName) (\(config.serverURL)/\(config.shareName))")
             return config
         } catch {
-            Logger.smbkeepfs.error("Failed to parse config: \(error)")
+            TimestampedLogger.smbkeepfs.error("Failed to parse config: \(error)")
             return nil
         }
     }

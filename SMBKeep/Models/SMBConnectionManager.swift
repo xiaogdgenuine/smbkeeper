@@ -19,7 +19,7 @@ class SMBConnectionManager: ObservableObject {
     /// 因此能在重启后（此时尚未挂载任何东西）存活下来，并驱动自动挂载。
     @Published var autoMountUUIDs: Set<UUID> = []
 
-    private let logger = Logger(subsystem: "com.example.smbkeep.manager", category: "SMBConnectionManager")
+    private let logger = TimestampedLogger(subsystem: "com.example.smbkeep.manager", category: "SMBConnectionManager")
 
     static let connectionsFileName = "smb_connections.json"
     static let activeMountsFileName = "active_mounts.json"
@@ -68,7 +68,7 @@ class SMBConnectionManager: ObservableObject {
             let decoded = try JSONDecoder().decode([SMBConnection].self, from: data)
             connections = decoded
             restorePasswordsFromKeychain()
-            logger.info("Loaded \(decoded.count) connection(s)")
+            logger.debug("Loaded \(decoded.count) connection(s)")
         } catch {
             logger.debug("No saved connections, using defaults")
         }
@@ -80,7 +80,7 @@ class SMBConnectionManager: ObservableObject {
         do {
             let data = try JSONEncoder().encode(connections)
             try data.write(to: url, options: .atomic)
-            logger.info("Saved \(connections.count) connection(s)")
+            logger.debug("Saved \(connections.count) connection(s)")
         } catch {
             logger.error("Failed to save connections: \(error)")
         }
@@ -226,7 +226,7 @@ class SMBConnectionManager: ObservableObject {
                 self.connections[i].isMounted = false
                 self.activeVolumeUUIDs.remove(self.connections[i].id)
                 changed = true
-                self.logger.info("Stale mount cleaned: \(self.connections[i].displayName) not in mount table")
+                self.logger.debug("Stale mount cleaned: \(self.connections[i].displayName) not in mount table")
             }
         }
 

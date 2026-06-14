@@ -32,12 +32,10 @@ enum ExtensionLogReader {
             )
             let entries = try store.getEntries(at: position, matching: predicate)
 
-            let formatter = DateFormatter()
-            formatter.dateFormat = "HH:mm:ss.SSS"
-
+            // 每条日志消息本身已带毫秒时间戳（见 TimestampedLogger），这里不再重复添加。
             var lines: [String] = []
             for case let entry as OSLogEntryLog in entries {
-                lines.append("[\(formatter.string(from: entry.date))] \(entry.composedMessage)")
+                lines.append(entry.composedMessage)
             }
             if lines.count > limit {
                 lines = Array(lines.suffix(limit))

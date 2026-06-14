@@ -20,6 +20,7 @@ read 不再阻塞元数据操作。网络变化时我们直接销毁 context：`
 import Foundation
 import SMB2
 import OSLog
+import Semaphore
 
 /// 作为每个请求的 `cb_data` 交给 libsmb2 的令牌。C 完成回调会把它还原成 Swift 对象，
 /// 并路由到所属的 client。
@@ -52,7 +53,7 @@ final class SMB2DirectClient: @unchecked Sendable {
     private var context: UnsafeMutablePointer<smb2_context>?
     private let loop = DispatchQueue(label: "com.apple.fskit.smbkeepfs.libsmb2.loop")
     private let config: SMBConfiguration
-    private let logger: Logger
+    private let logger: TimestampedLogger
 
     /// 在途请求，以单调递增的 id 为键。存储的闭包负责解释 libsmb2 的 status/command-data，
     /// 并且只 resume 等待中的 continuation 一次。
@@ -89,8 +90,8 @@ final class SMB2DirectClient: @unchecked Sendable {
     // 针对连接握手的一次性挂钟兜底（见 `armConnectDeadline`）。
     private var connectDeadlineTimer: DispatchSourceTimer?
 
-    // 单飞（single-flight）重连。
-    private var reconnectWaiters: [CheckedContinuation<Bool, Never>] = []
+    // 单飞（single-flight）重连：用信号量保证同一时刻只有一个重连在跑。
+    private let reconnectSemaphore = AsyncSemaphore(value: 1)
 
     /// 固定的 libsmb2 单操作超时（秒）。局域网 SMB 很快，因此用一个短而统一的截止时间
     /// 来限制卡住的请求在被 libsmb2 中止前能拖多久；单次 SMB RPC 正常情况下绝不需要更久。
@@ -98,14 +99,13 @@ final class SMB2DirectClient: @unchecked Sendable {
 
     /// 连接握手的硬性挂钟上限（秒）。libsmb2 的单操作超时只有在 PDU 已入队、
     /// 且 `smb2_service` 被周期性调用时才会触发，所以面向黑洞/半开网络的纯 TCP-connect 阶段
-    /// 本身没有任何上界。这个定时器是兜底，保证 `connect()` 总能完成，
-    /// 从而卡住的重连永远不会把整个卷顶死。略高于 `operationTimeout`，
-    /// 这样只要真有 PDU 存在，libsmb2 自己（更干净）的 PDU 超时就会先生效。
-    private static let connectDeadline: TimeInterval = 12
+    /// 本身没有任何上界。这个定时器是兜底，保证 `connect()` 尽快失败，
+    /// 从而切换网络后不会因为一次卡住的重连拖太久。
+    private static let connectDeadline: TimeInterval = 5
 
     init(config: SMBConfiguration) {
         self.config = config
-        self.logger = Logger(subsystem: "com.apple.fskit.SMBKeepFS", category: config.connectionID)
+        self.logger = TimestampedLogger(subsystem: "com.apple.fskit.SMBKeepFS", category: config.connectionID)
     }
 
     deinit {
@@ -126,7 +126,7 @@ final class SMB2DirectClient: @unchecked Sendable {
                     cont.resume(throwing: POSIXError(.ENOMEM))
                     return
                 }
-                self.logger.info("libsmb2 connecting to \(self.config.serverURL)/\(self.config.shareName) as \(self.config.username)")
+                self.logger.debug("libsmb2 connecting to \(self.config.serverURL)/\(self.config.shareName) as \(self.config.username)")
                 smb2_set_timeout(ctx, Self.operationTimeout)
                 smb2_set_security_mode(ctx, UInt16(SMB2_NEGOTIATE_SIGNING_ENABLED))
                 smb2_set_authentication(ctx, Int32(SMB2_SEC_NTLMSSP.rawValue))
@@ -151,7 +151,7 @@ final class SMB2DirectClient: @unchecked Sendable {
                         self.loop.async { self.teardownContext() }
                         cont.resume(throwing: err)
                     } else {
-                        self.logger.info("libsmb2 connected to \(self.config.shareName)")
+                        self.logger.debug("libsmb2 connected to \(self.config.shareName)")
                         self.startTick()
                         cont.resume()
                     }
@@ -188,49 +188,39 @@ final class SMB2DirectClient: @unchecked Sendable {
     /// 拆除连接（优雅卸载/停用）。非阻塞。
     func disconnect() {
         loop.async {
-            self.logger.info("libsmb2 disconnecting from \(self.config.shareName)")
+            self.logger.debug("libsmb2 disconnecting from \(self.config.shareName)")
             self.teardownContext()
         }
     }
 
-    /// 重连，将并发的调用方合并到同一次尝试上。
+    /// 重连。用信号量保证同一时刻只有一个重连在跑；并发调用方排队等待。
     @discardableResult
     func reconnect() async -> Bool {
-        await withCheckedContinuation { (cont: CheckedContinuation<Bool, Never>) in
-            loop.async {
-                self.reconnectWaiters.append(cont)
-                guard self.reconnectWaiters.count == 1 else { return }
-                Task.detached { [weak self] in
-                    guard let self else { return }
-                    let ok = await self.performReconnect()
-                    self.finishReconnect(ok)
-                }
-            }
+        // 记下进入等待前的 context。若在排队期间别人已经重连出新的 context，
+        // 直接复用即可，不必把刚建好的连接又拆掉重连一遍。
+        let previous = await awaitOnLoop { self.context }
+        await reconnectSemaphore.wait()
+        defer { reconnectSemaphore.signal() }
+
+        let current = await awaitOnLoop { self.context }
+        if let current, current != previous {
+            return true
         }
+        return await performReconnect()
     }
 
     private func performReconnect() async -> Bool {
-        self.logger.info("libsmb2 reconnecting to \(self.config.serverURL)/\(self.config.shareName)")
+        self.logger.debug("libsmb2 reconnecting to \(self.config.serverURL)/\(self.config.shareName)")
         // 先拆掉（假定已死的）context；这会通过 SMB2_STATUS_SHUTDOWN 立即让所有在途请求失败，
         // 而不是在一个已死的 socket 上傻等。
-        await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
-            loop.async { self.teardownContext(); c.resume() }
-        }
+        await awaitOnLoop { self.teardownContext() }
         do {
             try await connect()
-            self.logger.info("libsmb2 reconnect succeeded")
+            self.logger.debug("libsmb2 reconnect succeeded")
             return true
         } catch {
             self.logger.error("libsmb2 reconnect failed: \(error)")
             return false
-        }
-    }
-
-    private func finishReconnect(_ ok: Bool) {
-        loop.async {
-            let waiters = self.reconnectWaiters
-            self.reconnectWaiters.removeAll()
-            for w in waiters { w.resume(returning: ok) }
         }
     }
 
@@ -371,12 +361,10 @@ final class SMB2DirectClient: @unchecked Sendable {
         let id = self.nextID
         self.nextID &+= 1
         let raw = Unmanaged.passRetained(SMB2RequestToken(id: id, client: self)).toOpaque()
+        // echo 仅用于保活；失败不在这里主动重连，留给下一次真实操作懒重连，
+        // 避免“销毁旧 context → echo 失败 → 又重连”的循环。
         self.pending[id] = { [weak self] status, _ in
-            guard let self, status < 0 else { return }
-            self.logger.info("libsmb2 keepalive echo failed (\(status)); reconnecting")
-            Task { [weak self] in
-                await self?.reconnect()
-            }
+            if status < 0 { self?.logger.debug("libsmb2 keepalive echo failed (\(status))") }
         }
         let rc = smb2_echo_async(ctx, smb2RequestCompletion, raw)
         if self.pending[id] != nil {
@@ -395,9 +383,15 @@ final class SMB2DirectClient: @unchecked Sendable {
         cancelConnectDeadline()
         disposeSources()
         if let ctx = self.context {
+            // 不再只依赖 smb2_destroy_context 回调所有在途请求。实际网络切换时，
+            // 如果某个请求没有被 libsmb2 回调，FSKit 的 replyHandler 就永远不执行，
+            // Finder 会一直卡在 getattrlist / readdir。这里先主动失败所有 pending。
+            let requests = self.pending
+            self.pending.removeAll(keepingCapacity: true)
+            for (_, completion) in requests {
+                completion(-Int32(ENOTCONN), nil)
+            }
             self.context = nil
-            // 以 SMB2_STATUS_SHUTDOWN 触发每个在途请求的回调，
-            // 从而以错误 resume 正在等待的 continuation。
             smb2_destroy_context(ctx)
         }
         // 这些 fh 结构由（现已销毁的）context 拥有；直接丢弃引用即可。

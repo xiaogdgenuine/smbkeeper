@@ -16,7 +16,7 @@ class MountManager: ObservableObject {
     @Published var lastError: String?
     @Published var mountOutput: String = ""
 
-    private let logger = Logger(subsystem: "com.example.smbkeep.mount", category: "MountManager")
+    private let logger = TimestampedLogger(subsystem: "com.example.smbkeep.mount", category: "MountManager")
     private let manager: SMBConnectionManager
     init(manager: SMBConnectionManager) {
         self.manager = manager
@@ -59,7 +59,7 @@ class MountManager: ObservableObject {
 
         if let preflightError = await preflightLocalSMBAccess(for: connection) {
             mountOutput += "=== local network preflight ===\n\(preflightError)\n\n"
-            logger.error("Local network preflight failed: \(preflightError, privacy: .public)")
+            logger.error("Local network preflight failed: \(preflightError)")
         }
 
         // 尝试多种挂载方式。
@@ -70,7 +70,7 @@ class MountManager: ObservableObject {
             // 保留（现已为空的）source 目录，让挂载的 source 路径继续有效。
             manager.removeMountConfigFile(for: connection.id)
             manager.markMounted(connection.id)
-            logger.info("Mounted \(connection.displayName)")
+            logger.debug("Mounted \(connection.displayName)")
         } else {
             manager.clearMountConfig(for: connection.id)
         }
@@ -99,7 +99,7 @@ class MountManager: ObservableObject {
         if result {
             manager.markUnmounted(connection.id)
             manager.clearMountConfig(for: connection.id)
-            logger.info("Unmounted \(connection.displayName)")
+            logger.debug("Unmounted \(connection.displayName)")
         }
 
         isBusy = false
@@ -194,7 +194,7 @@ class MountManager: ObservableObject {
             ]
 
             for (name, cmd) in commands {
-                logger.info("Trying \(name)...")
+                logger.debug("Trying \(name)...")
                 let output = await runShellCommand(cmd)
                 mountOutput += "=== \(name) ===\n=== \(cmd) ===\n\(output)\n\n"
 
@@ -224,7 +224,7 @@ class MountManager: ObservableObject {
                 if !killed.lowercased().contains("error") {
                     try? await Task.sleep(nanoseconds: 2_000_000_000)
                     for (name, cmd) in commands {
-                        logger.info("Retrying \(name) after fskitd restart...")
+                        logger.debug("Retrying \(name) after fskitd restart...")
                         let retryOutput = await runShellCommand(cmd)
                         mountOutput += "=== retry: \(name) ===\n\(retryOutput)\n\n"
                         if await isMountPointMounted(mountPoint) {
@@ -259,7 +259,7 @@ class MountManager: ObservableObject {
         ]
 
         for (name, cmd) in commands {
-            logger.info("Trying \(name)...")
+            logger.debug("Trying \(name)...")
             let output = await runShellCommand(cmd)
             mountOutput += "=== \(name) ===\n\(output)\n\n"
 

@@ -13,7 +13,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// 当本进程由系统作为登录项启动时为 true（而非用户手动打开）。
     static var launchedAsLoginItem = false
 
-    private let logger = Logger(subsystem: "com.example.smbkeep.app", category: "AppDelegate")
+    private let logger = TimestampedLogger(subsystem: "com.example.smbkeep.app", category: "AppDelegate")
 
     func applicationWillFinishLaunching(_ notification: Notification) {
         if Self.detectLoginItemLaunch() {
@@ -29,7 +29,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         guard AppDelegate.launchedAsLoginItem else { return }
-        logger.info("Launched as login item; running silent auto-mount")
+        logger.debug("Launched as login item; running silent auto-mount")
 
         // 确保 SwiftUI 场景留下的窗口不会残留。
         for window in NSApp.windows {

@@ -8,8 +8,8 @@
 import Foundation
 import FSKit
 
-extension Logger {
-    static let smbkeepfs = Logger(subsystem: "com.apple.fskit.SMBKeepFS", category: "default")
+extension TimestampedLogger {
+    static let smbkeepfs = TimestampedLogger(subsystem: "com.apple.fskit.SMBKeepFS", category: "default")
 }
 
 /// 把当前的 `errno` 值包装成 `POSIXError` 返回。
@@ -22,7 +22,7 @@ func throwErrno<T: SignedInteger>(_ block: () throws -> T) throws -> T {
     let ret = try block()
     guard ret >= 0 else {
         guard errno != 0 else {
-            Logger.smbkeepfs.error("Call to block failed, and errno is not set")
+            TimestampedLogger.smbkeepfs.error("Call to block failed, and errno is not set")
             return ret
         }
         throw posixErrno
@@ -39,7 +39,7 @@ func throwErrno<T: SignedInteger>(_ block: () throws -> T) throws -> T {
 /// 这正是允许多个连接同时挂载的前提。
 private func loadConfig(from resource: FSResource) -> SMBConfiguration? {
     guard let urlResource = resource as? FSPathURLResource else {
-        Logger.smbkeepfs.error("Resource is not an FSPathURLResource: \(type(of: resource))")
+        TimestampedLogger.smbkeepfs.error("Resource is not an FSPathURLResource: \(type(of: resource))")
         return nil
     }
     let url = urlResource.url
@@ -74,7 +74,7 @@ class SMBKeepFileSystem: FSUnaryFileSystem & FSUnaryFileSystemOperations {
                                          volumeName: volumeName,
                                          smbConfig: smbConfig)
         } catch {
-            Logger.smbkeepfs.error("\(#function): volume setup failed: \(error)")
+            TimestampedLogger.smbkeepfs.error("\(#function): volume setup failed: \(error)")
             return replyHandler(nil, error)
         }
         self.loadedVolume = volume
@@ -87,7 +87,7 @@ class SMBKeepFileSystem: FSUnaryFileSystem & FSUnaryFileSystemOperations {
                 volume.log("Volume mounted: \(smbConfig.displayName) at \(smbConfig.serverURL)/\(smbConfig.shareName)")
                 replyHandler(volume, nil)
             } catch {
-                Logger.smbkeepfs.error("\(#function): SMB connect failed: \(error)")
+                TimestampedLogger.smbkeepfs.error("\(#function): SMB connect failed: \(error)")
                 self.loadedVolume = nil
                 replyHandler(nil, error)
             }

@@ -11,7 +11,7 @@ import OSLog
 
 enum KeychainHelper {
     private static let service = "com.example.smbkeep.connection"
-    private static let logger = Logger(subsystem: "com.example.smbkeep.keychain", category: "KeychainHelper")
+    private static let logger = TimestampedLogger(subsystem: "com.example.smbkeep.keychain", category: "KeychainHelper")
 
     static func savePassword(_ password: String, forConnectionID id: UUID) {
         let account = id.uuidString
@@ -36,7 +36,7 @@ enum KeychainHelper {
             status = SecItemAdd(addQuery as CFDictionary, nil)
         }
         if status != errSecSuccess {
-            logger.error("Keychain save failed for \(account, privacy: .public): \(status)")
+            logger.error("Keychain save failed for \(account): \(status)")
         }
     }
 
@@ -68,7 +68,7 @@ enum KeychainHelper {
         ]
         let status = SecItemDelete(query as CFDictionary)
         if status != errSecSuccess && status != errSecItemNotFound {
-            logger.error("Keychain delete failed for \(account, privacy: .public): \(status)")
+            logger.error("Keychain delete failed for \(account): \(status)")
         }
     }
 }

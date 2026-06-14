@@ -1,8 +1,8 @@
 /*
-See the LICENSE.txt file for this sample's licensing information.
+许可信息见本示例的 LICENSE.txt 文件。
 
-Abstract:
-The app's top-level SwiftUI body.
+摘要：
+App 的顶层 SwiftUI 入口。
 */
 
 import SwiftUI

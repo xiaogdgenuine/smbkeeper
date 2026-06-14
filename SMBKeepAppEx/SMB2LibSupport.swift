@@ -1,8 +1,8 @@
 /*
-See the LICENSE.txt file for this sample’s licensing information.
+许可信息见本示例的 LICENSE.txt 文件。
 
-Abstract:
-Helpers for using libsmb2 (import SMB2) from the passthrough file system.
+摘要：
+在透传文件系统中使用 libsmb2（import SMB2）的辅助工具。
 */
 
 import Foundation

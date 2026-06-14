@@ -1,8 +1,8 @@
 /*
-See the LICENSE.txt file for this sample’s licensing information.
+许可信息见本示例的 LICENSE.txt 文件。
 
-Abstract:
-The app's main SwiftUI view.
+摘要：
+App 的主 SwiftUI 视图。
 */
 
 import SwiftUI
@@ -11,8 +11,8 @@ import AppKit
 struct ContentView: View {
     var body: some View {
         if AppDelegate.launchedAsLoginItem {
-            // Silent login-item launch: render nothing and close the window the
-            // SwiftUI scene created. The auto-mount runs in the AppDelegate.
+            // 静默的登录项启动：不渲染任何内容，并关闭 SwiftUI 场景创建的窗口。
+            // 自动挂载在 AppDelegate 中执行。
             Color.clear
                 .frame(width: 1, height: 1)
                 .background(WindowCloser())
@@ -23,8 +23,7 @@ struct ContentView: View {
     }
 }
 
-/// Closes the window hosting this view as soon as it appears. Used to keep the
-/// login-item launch fully headless.
+/// 视图一出现就关闭承载它的窗口。用于让登录项启动完全无界面。
 private struct WindowCloser: NSViewRepresentable {
     func makeNSView(context: Context) -> NSView {
         let view = NSView()

@@ -1,21 +1,20 @@
 /*
-See the LICENSE.txt file for this sample’s licensing information.
+许可信息见本示例的 LICENSE.txt 文件。
 
-Abstract:
-Extended-attribute support for Finder's per-file "open with" choice, tags, and comments.
+摘要：
+为访达的每文件“打开方式”选择、标签和注释提供扩展属性（xattr）支持。
 
-To avoid polluting the remote SMB share, these xattrs are persisted locally in the
-App Group container instead of being written back to the server. Implementing
-`supportedXattrNames(for:)` puts FSKit in "limited" mode, so it only routes these
-specific xattrs to us; every other xattr is left untouched.
+为避免污染远端 SMB 共享，这些 xattr 持久化保存在本地 App Group 容器里，
+而不是写回服务器。实现 `supportedXattrNames(for:)` 会让 FSKit 进入“受限”模式，
+只把这几个特定 xattr 路由给我们；其它所有 xattr 保持不变。
 */
 
 import Foundation
 import FSKit
 
-/// The xattr Finder writes for a per-file "Always Open With" choice (files only).
+/// 访达为每文件“始终用…打开”选择写入的 xattr（仅文件）。
 private let openWithXattr = "com.apple.LaunchServices.OpenWith"
-/// xattrs Finder uses for tags and the "Comments" field (files and folders).
+/// 访达用于标签和“注释”字段的 xattr（文件和文件夹）。
 private let tagsXattr = "com.apple.metadata:_kMDItemUserTags"
 private let commentXattr = "com.apple.metadata:kMDItemFinderComment"
 
@@ -77,7 +76,7 @@ private let commentXattr = "com.apple.metadata:kMDItemFinderComment"
 //    }
 //}
 
-/// A tiny thread-safe, persistent store for local-only xattrs, keyed by SMB path.
+/// 一个以 SMB 路径为键、线程安全的本地 xattr 持久化小存储。
 //final class SMBKeepLocalXattrStore {
 //    private let fileURL: URL?
 //    private let lock = NSLock()

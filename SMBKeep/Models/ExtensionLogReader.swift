@@ -1,12 +1,12 @@
 /*
-See the LICENSE.txt file for this sample's licensing information.
+许可信息见本示例的 LICENSE.txt 文件。
 
-Abstract:
-Reads the FSKit extension's runtime logs live from the unified logging system.
+摘要：
+从统一日志系统实时读取 FSKit 扩展的运行时日志。
 
-The extension logs via `Logger` (OSLog). Because the host app is not sandboxed,
-it can open the local log store with `OSLogStore.local()` and read entries from
-other processes — so no on-disk log file is needed.
+扩展通过 `Logger`（OSLog）写日志。宿主 App 未沙盒化，
+因此可以用 `OSLogStore.local()` 打开本地日志存储并读取其它进程的条目——
+无需额外的磁盘日志文件。
 */
 
 import Foundation
@@ -14,13 +14,13 @@ import OSLog
 
 enum ExtensionLogReader {
 
-    /// Subsystem used by the extension's `Logger.smbkeepfs`.
+    /// 扩展的 `Logger.smbkeepfs` 使用的 subsystem。
     static let subsystem = "com.apple.fskit.SMBKeepFS"
 
-    /// Reads extension log lines for one connection emitted at or after `since`.
+    /// 读取某个连接在 `since` 之后（含）产生的扩展日志行。
     ///
-    /// This performs a blocking query against the unified log store, so call it
-    /// off the main thread. Returns the formatted lines, or an error message line.
+    /// 这会阻塞地查询统一日志存储，因此请在主线程之外调用。
+    /// 返回格式化后的行，或一条错误信息行。
     static func read(since: Date, connectionID: UUID, limit: Int = 2000) -> [String] {
         do {
             let store = try OSLogStore.local()

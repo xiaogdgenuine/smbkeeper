@@ -1,22 +1,22 @@
 /*
-See the LICENSE.txt file for this sample's licensing information.
+许可信息见本示例的 LICENSE.txt 文件。
 
-Abstract:
-Manages SMB connection configurations stored in the shared App Group container.
+摘要：
+管理存储在共享 App Group 容器中的 SMB 连接配置。
 */
 
 import Foundation
 import OSLog
 
-/// Manages reading and writing SMB connection configs to the shared App Group container.
+/// 管理对共享 App Group 容器中 SMB 连接配置的读写。
 @MainActor
 class SMBConnectionManager: ObservableObject {
     @Published var connections: [SMBConnection] = []
     @Published var activeVolumeUUIDs: Set<UUID> = []
 
-    /// Connections the user wants restored at login. Unlike `activeVolumeUUIDs`,
-    /// this set is NOT cleared by `reconcileMountStateWithSystem()`, so it
-    /// survives a reboot (when nothing is mounted yet) and drives auto-mount.
+    /// 用户希望在登录时恢复的连接。与 `activeVolumeUUIDs` 不同，
+    /// 这个集合不会被 `reconcileMountStateWithSystem()` 清空，
+    /// 因此能在重启后（此时尚未挂载任何东西）存活下来，并驱动自动挂载。
     @Published var autoMountUUIDs: Set<UUID> = []
 
     private let logger = Logger(subsystem: "com.example.smbkeep.manager", category: "SMBConnectionManager")
@@ -25,11 +25,10 @@ class SMBConnectionManager: ObservableObject {
     static let activeMountsFileName = "active_mounts.json"
     static let autoMountFileName = "auto_mount.json"
 
-    /// App-owned storage for connection/state JSON. The App Group container was
-    /// dropped: the FSKit extension sandbox can't read it, and the non-sandboxed
-    /// app doesn't need it, so an unprovisioned app-group entitlement only
-    /// produced "entitlement ignored" warnings. We reuse the same Application
-    /// Support directory that already holds `mount-sources`.
+    /// App 自有的连接/状态 JSON 存储。App Group 容器已弃用：
+    /// FSKit 扩展沙盒读不到它，而未沙盒化的 App 也不需要它，
+    /// 未配置的 app-group entitlement 只会产生 “entitlement ignored” 警告。
+    /// 我们复用已经存放 `mount-sources` 的同一 Application Support 目录。
     var sharedContainerURL: URL? {
         let fm = FileManager.default
         guard let appSupport = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
@@ -60,7 +59,7 @@ class SMBConnectionManager: ObservableObject {
         reconcileMountStateWithSystem()
     }
 
-    // MARK: - Connection Persistence
+    // MARK: - 连接持久化
 
     func loadConnections() {
         guard let url = connectionsFileURL else { return }
@@ -134,7 +133,7 @@ class SMBConnectionManager: ObservableObject {
         saveConnections()
     }
 
-    // MARK: - Active Mounts
+    // MARK: - 活跃挂载
 
     func loadActiveMounts() {
         guard let url = activeMountsFileURL else { return }
@@ -163,7 +162,7 @@ class SMBConnectionManager: ObservableObject {
     func markMounted(_ connectionID: UUID) {
         activeVolumeUUIDs.insert(connectionID)
         saveActiveMounts()
-        // A successful mount means the user wants this restored at login.
+        // 成功挂载意味着用户希望在登录时恢复它。
         autoMountUUIDs.insert(connectionID)
         saveAutoMount()
         if let index = connections.firstIndex(where: { $0.id == connectionID }) {
@@ -175,7 +174,7 @@ class SMBConnectionManager: ObservableObject {
     func markUnmounted(_ connectionID: UUID) {
         activeVolumeUUIDs.remove(connectionID)
         saveActiveMounts()
-        // An explicit unmount means the user no longer wants it auto-mounted.
+        // 显式卸载意味着用户不再希望自动挂载它。
         autoMountUUIDs.remove(connectionID)
         saveAutoMount()
         if let index = connections.firstIndex(where: { $0.id == connectionID }) {
@@ -184,7 +183,7 @@ class SMBConnectionManager: ObservableObject {
         }
     }
 
-    // MARK: - Auto Mount (login restore)
+    // MARK: - 自动挂载（登录恢复）
 
     func loadAutoMount() {
         guard let url = autoMountFileURL else { return }
@@ -206,8 +205,8 @@ class SMBConnectionManager: ObservableObject {
         }
     }
 
-    /// Verify each "mounted" connection against the system mount table and
-    /// clear any stale entries where the volume has been unmounted externally.
+    /// 对照系统挂载表校验每条标记为“已挂载”的连接，
+    /// 并清除卷已被外部卸载的陈旧条目。
     func reconcileMountStateWithSystem() {
         let fm = FileManager.default
         let bundleID = Bundle.main.bundleIdentifier ?? "com.example.smbkeep"
@@ -249,17 +248,17 @@ class SMBConnectionManager: ObservableObject {
         return String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
     }
 
-    // MARK: - Mount Source Config
+    // MARK: - 挂载 Source 配置
 
-    /// File name the extension reads inside the mount source directory.
+    /// 扩展在挂载 source 目录内读取的文件名。
     static let mountConfigFileName = "mount-config.json"
 
-    /// Base directory (app-owned) that holds one subdirectory per connection.
-    /// Each subdirectory is used as the `mount` *source* argument; FSKit delivers
-    /// it to the extension as a security-scoped `FSPathURLResource`.
+    /// App 拥有的基础目录，每个连接对应一个子目录。
+    /// 每个子目录用作 `mount` 的 *source* 参数；FSKit 会把它作为
+    /// 带安全作用域的 `FSPathURLResource` 交给扩展。
     ///
-    /// The App Group container is intentionally NOT used here: FSKit extension
-    /// sandboxes don't expose it, so the extension can't read config from there.
+    /// 这里故意不使用 App Group 容器：FSKit 扩展沙盒不暴露它，
+    /// 因此扩展无法从那里读取配置。
     private var mountSourcesBaseURL: URL? {
         let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
         let bundleID = Bundle.main.bundleIdentifier ?? "com.example.smbkeep"
@@ -268,15 +267,14 @@ class SMBConnectionManager: ObservableObject {
             .appendingPathComponent("mount-sources")
     }
 
-    /// The per-connection mount source directory.
+    /// 某个连接的挂载 source 目录。
     func mountSourceDirectory(for connectionID: UUID) -> URL? {
         mountSourcesBaseURL?.appendingPathComponent(connectionID.uuidString)
     }
 
-    /// Write the connection's config into its own mount source directory and
-    /// return that directory, to be passed as the `mount` source argument.
-    /// Each connection gets a distinct directory, so simultaneous mounts of
-    /// different connections never overwrite each other's config.
+    /// 把连接配置写入它自己的挂载 source 目录，并返回该目录，
+    /// 供作为 `mount` 的 source 参数传入。
+    /// 每个连接都有独立目录，因此同时挂载不同连接时不会互相覆盖配置。
     func writeMountConfig(for connectionID: UUID) -> URL? {
         guard let connection = connections.first(where: { $0.id == connectionID }),
               let sourceDir = mountSourceDirectory(for: connectionID)
@@ -289,7 +287,6 @@ class SMBConnectionManager: ObservableObject {
             "startingPath": connection.startingPath,
             "username": connection.username,
             "password": connection.password,
-            "operationTimeout": "\(connection.operationTimeout)",
             "displayName": connection.displayName,
             "localUID": "\(getuid())",
             "localGID": "\(getgid())"
@@ -297,7 +294,7 @@ class SMBConnectionManager: ObservableObject {
 
         do {
             let fm = FileManager.default
-            // Lock down the base and per-connection directories to owner-only (0700).
+            // 将基础目录和每连接目录锁定为仅所有者可访问（0700）。
             if let baseURL = mountSourcesBaseURL {
                 try fm.createDirectory(at: baseURL, withIntermediateDirectories: true,
                                        attributes: [.posixPermissions: 0o700])
@@ -310,8 +307,7 @@ class SMBConnectionManager: ObservableObject {
             let configURL = sourceDir.appendingPathComponent(Self.mountConfigFileName)
             let data = try JSONEncoder().encode(config)
             try data.write(to: configURL, options: .atomic)
-            // Plaintext credentials live here only during the mount window; make
-            // the file owner read/write only (0600).
+            // 明文凭据只在该挂载窗口内落盘；将文件设为仅所有者可读写（0600）。
             try? fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: configURL.path)
             return sourceDir
         } catch {
@@ -320,18 +316,16 @@ class SMBConnectionManager: ObservableObject {
         }
     }
 
-    /// Delete just the plaintext `mount-config.json` (keep the source directory
-    /// so the mount's source path stays valid). Call this right after a mount
-    /// succeeds: the extension has already read the config into memory in
-    /// `loadResource`, so the credentials no longer need to be on disk.
+    /// 只删除明文的 `mount-config.json`（保留 source 目录，
+    /// 让挂载的 source 路径继续有效）。在挂载成功后立即调用：
+    /// 扩展已在 `loadResource` 中把配置读入内存，凭据不再需要留在磁盘上。
     func removeMountConfigFile(for connectionID: UUID) {
         guard let sourceDir = mountSourceDirectory(for: connectionID) else { return }
         let configURL = sourceDir.appendingPathComponent(Self.mountConfigFileName)
         try? FileManager.default.removeItem(at: configURL)
     }
 
-    /// Remove a connection's mount source directory entirely (used on unmount
-    /// and on mount failure).
+    /// 完全移除某个连接的挂载 source 目录（用于卸载和挂载失败时）。
     func clearMountConfig(for connectionID: UUID) {
         guard let sourceDir = mountSourceDirectory(for: connectionID) else { return }
         try? FileManager.default.removeItem(at: sourceDir)

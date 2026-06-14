@@ -1,0 +1,31 @@
+---
+description: 项目代码注释统一使用中文
+globs: SMBKeep/**/*.swift,SMBKeepAppEx/**/*.swift
+alwaysApply: false
+---
+
+# 中文注释规范
+
+本项目（`SMBKeep/` 与 `SMBKeepAppEx/`）的代码注释统一使用中文。
+
+## 适用范围
+
+- 文件头块注释（`/* ... */`）
+- 行注释（`//`）与文档注释（`///`）
+- `MARK` 分区标题
+
+## 写法要求
+
+- 注释用中文叙述意图、约束与取舍；API 名、类型名、常量名、协议名保留英文原文（如 `FSKit`、`smb2_service`、`DispatchSource`）。
+- 新增或修改代码时，同步补充/更新中文注释；不要留下英文注释。
+- 不要翻译 `deps/` 等第三方依赖里的注释。
+
+## 示例
+
+```swift
+// ✅ 在事件循环上驱动 libsmb2 的异步 connect
+func connect() async throws { ... }
+
+// ❌ Drive libsmb2's async connect over the event loop
+func connect() async throws { ... }
+```

@@ -1,15 +1,15 @@
 /*
-See the LICENSE.txt file for this sample's licensing information.
+许可信息见本示例的 LICENSE.txt 文件。
 
-Abstract:
-Handles mounting and unmounting of SMB shares via FSKit.
+摘要：
+通过 FSKit 处理 SMB 共享的挂载与卸载。
 */
 
 import Foundation
 import Network
 import OSLog
 
-/// Manages the lifecycle of an FSKit volume mount.
+/// 管理 FSKit 卷挂载的生命周期。
 @MainActor
 class MountManager: ObservableObject {
     @Published var isBusy = false
@@ -31,8 +31,8 @@ class MountManager: ObservableObject {
         return mountDir
     }
 
-    /// Mount an SMB share.
-    /// Writes the active config then triggers the extension via mount_fskit.
+    /// 挂载一个 SMB 共享。
+    /// 写入活动配置，然后通过 mount_fskit 触发扩展。
     func mount(connection: SMBConnection, silent: Bool = false) async -> Bool {
         isBusy = true
         lastError = nil
@@ -44,7 +44,7 @@ class MountManager: ObservableObject {
             return false
         }
 
-        // Get the extension bundle identifier from the main app's bundle.
+        // 从主 App 的 bundle 中获取扩展的 bundle identifier。
         guard let extBundleID = Bundle.main.object(forInfoDictionaryKey: "EXTENSION_BUNDLE_ID") as? String
                 ?? guessExtensionBundleID() else {
             lastError = "无法确定扩展的 Bundle ID"
@@ -54,7 +54,7 @@ class MountManager: ObservableObject {
 
         let mountPoint = mountPoint(for: connection).path
 
-        // Register the extension before mounting to avoid extensionKit error 2.
+        // 挂载前先注册扩展，避免 extensionKit error 2。
         await registerExtension()
 
         if let preflightError = await preflightLocalSMBAccess(for: connection) {
@@ -62,13 +62,12 @@ class MountManager: ObservableObject {
             logger.error("Local network preflight failed: \(preflightError, privacy: .public)")
         }
 
-        // Try multiple approaches to mount.
+        // 尝试多种挂载方式。
         let result = await runMountCommand(extBundleID: extBundleID, sourceDir: sourceDir.path, mountPoint: mountPoint, connection: connection, silent: silent)
 
         if result {
-            // The extension has already read the config in loadResource, so wipe
-            // the plaintext credentials from disk immediately. Keep the (now empty)
-            // source directory so the mount's source path stays valid.
+            // 扩展已在 loadResource 中读过配置，因此立刻从磁盘擦除明文凭据。
+            // 保留（现已为空的）source 目录，让挂载的 source 路径继续有效。
             manager.removeMountConfigFile(for: connection.id)
             manager.markMounted(connection.id)
             logger.info("Mounted \(connection.displayName)")
@@ -80,7 +79,7 @@ class MountManager: ObservableObject {
         return result
     }
 
-    /// Unmount an SMB share.
+    /// 卸载一个 SMB 共享。
     func unmount(connection: SMBConnection) async -> Bool {
         isBusy = true
         lastError = nil
@@ -107,7 +106,7 @@ class MountManager: ObservableObject {
         return result
     }
 
-    // MARK: - Private
+    // MARK: - 私有
 
     private func guessExtensionBundleID() -> String? {
         let mainBundleID = Bundle.main.bundleIdentifier ?? ""
@@ -119,7 +118,7 @@ class MountManager: ObservableObject {
                 ?? guessExtensionBundleID() else {
             return
         }
-        // Disable and re-enable to force fskitd to release stale state.
+        // 先 disable 再 enable，强制 fskitd 释放陈旧状态。
         _ = await runShellCommand("pluginkit -e ignore -i \"\(extBundleID)\" 2>&1")
         let enableOutput = await runShellCommand("pluginkit -e use -i \"\(extBundleID)\" 2>&1")
         mountOutput += "=== pluginkit refresh ===\n\(enableOutput)\n"
@@ -185,12 +184,11 @@ class MountManager: ObservableObject {
     }
 
     private func runMountCommand(extBundleID: String, sourceDir: String, mountPoint: String, connection: SMBConnection, silent: Bool = false) async -> Bool {
-            // FSKit extensions use the mount command with the FSShortName "smbkeep"
-            // from the extension's Info.plist. The `-F` flag forces FSKit routing,
-            // and the source argument is the per-connection config directory, which
-            // FSKit delivers to the extension as a security-scoped FSPathURLResource.
+            // FSKit 扩展通过 mount 命令使用扩展 Info.plist 中的 FSShortName "smbkeep"。
+            // `-F` 强制走 FSKit 路由；source 参数是每连接独立的配置目录，
+            // FSKit 会把它作为带安全作用域的 FSPathURLResource 交给扩展。
             let commands: [(title: String, command: String)] = [
-                // Try 1: mount with short name "smbkeep" (from Info.plist FSShortName)
+                // 尝试 1：用短名 "smbkeep" 挂载（来自 Info.plist 的 FSShortName）
                 ("mount -F -t smbkeep",
                  "/sbin/mount -F -t smbkeep \"\(sourceDir)\" \"\(mountPoint)\" 2>&1"),
             ]
@@ -203,11 +201,11 @@ class MountManager: ObservableObject {
                 let lower = output.lowercased()
                 if !lower.contains("failed") && !lower.contains("error") && !lower.contains("not found")
                     && !lower.contains("unknown special file") && !lower.contains("no such file") {
-                    // Verify it's actually mounted
+                    // 确认它确实已经挂载
                     if await isMountPointMounted(mountPoint) {
                         return true
                     }
-                    // Wait a bit and check again
+                    // 稍等片刻再检查一次
                     try? await Task.sleep(nanoseconds: 1_000_000_000)
                     if await isMountPointMounted(mountPoint) {
                         return true
@@ -220,8 +218,7 @@ class MountManager: ObservableObject {
                 || lowerMountOutput.contains("file system named")
                 || lowerMountOutput.contains("filesystem named")
             if staleFSKitState {
-                // fskitd is holding stale state. Restart it via admin auth prompt,
-                // then retry the mount once.
+                // fskitd 持有陈旧状态。通过管理员授权提示重启它，然后重试挂载一次。
                 let killed = await runShellCommand("osascript -e 'do shell script \"killall fskitd\" with administrator privileges' 2>&1")
                 mountOutput += "=== fskitd restart ===\n\(killed)\n\n"
                 if !killed.lowercased().contains("error") {
@@ -282,7 +279,7 @@ class MountManager: ObservableObject {
             }
         }
 
-        // Check if it's already not mounted
+        // 检查它是否已经不在挂载状态
         if !(await isMountPointMounted(mountPoint)) {
             mountOutput += "卷宗似乎已经卸载\n"
             return true

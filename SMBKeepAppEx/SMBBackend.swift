@@ -1,22 +1,27 @@
 /*
-See the LICENSE.txt file for this sample’s licensing information.
+许可信息见本示例的 LICENSE.txt 文件。
 
-Abstract:
-SMB storage facade; uses libsmb2 directly via ``SMB2DirectClient``.
+摘要：
+SMB 存储门面（facade）；通过异步的 ``SMB2DirectClient`` 直接使用 libsmb2。
 */
 
 import Foundation
 import OSLog
 
-/// FSKit-facing SMB API implemented on top of libsmb2 (not AMSMB2).
+/// 面向 FSKit 的 SMB API，构建在 libsmb2 之上（而非 AMSMB2）。
 final class SMBBackend: @unchecked Sendable {
 
     private let client: SMB2DirectClient
     let config: SMBConfiguration
 
-    init(config: SMBConfiguration) throws {
+    init(config: SMBConfiguration) {
         self.config = config
-        self.client = try SMB2DirectClient(config: config)
+        self.client = SMB2DirectClient(config: config)
+    }
+
+    /// 建立初始连接。必须 await 完成后才能开始处理 I/O。
+    func connect() async throws {
+        try await client.connect()
     }
 
     func disconnect() {
@@ -24,71 +29,71 @@ final class SMBBackend: @unchecked Sendable {
     }
 
     @discardableResult
-    func reconnect() -> Bool {
-        client.reconnect()
+    func reconnect() async -> Bool {
+        await client.reconnect()
     }
 
     func isConnectionLost(_ error: Error) -> Bool {
         client.isConnectionLost(error)
     }
 
-    func attributesOfItem(atPath path: String) throws -> [URLResourceKey: any Sendable] {
-        try client.attributesOfItem(atPath: path)
+    func attributesOfItem(atPath path: String) async throws -> [URLResourceKey: any Sendable] {
+        try await client.attributesOfItem(atPath: path)
     }
 
-    func attributesOfFileSystem(forPath path: String = "") throws -> [FileAttributeKey: any Sendable] {
-        try client.attributesOfFileSystem(forPath: path)
+    func attributesOfFileSystem(forPath path: String = "") async throws -> [FileAttributeKey: any Sendable] {
+        try await client.attributesOfFileSystem(forPath: path)
     }
 
-    func contentsOfDirectory(atPath path: String) throws -> [[URLResourceKey: any Sendable]] {
-        try client.contentsOfDirectory(atPath: path)
+    func contentsOfDirectory(atPath path: String) async throws -> [[URLResourceKey: any Sendable]] {
+        try await client.contentsOfDirectory(atPath: path)
     }
 
-    func setAttributes(_ attributes: [URLResourceKey: Any], atPath path: String) throws {
-        try client.setAttributes(attributes, atPath: path)
+    func setAttributes(_ attributes: [URLResourceKey: Any], atPath path: String) async throws {
+        try await client.setAttributes(attributes, atPath: path)
     }
 
-    func truncateFile(atPath path: String, atOffset: UInt64) throws {
-        try client.truncateFile(atPath: path, atOffset: atOffset)
+    func truncateFile(atPath path: String, atOffset: UInt64) async throws {
+        try await client.truncateFile(atPath: path, atOffset: atOffset)
     }
 
-    func createDirectory(atPath path: String) throws {
-        try client.createDirectory(atPath: path)
+    func createDirectory(atPath path: String) async throws {
+        try await client.createDirectory(atPath: path)
     }
 
-    func createEmptyFile(atPath path: String) throws {
-        try client.createEmptyFile(atPath: path)
+    func createEmptyFile(atPath path: String) async throws {
+        try await client.createEmptyFile(atPath: path)
     }
 
-    func removeItem(atPath path: String) throws {
-        try client.removeItem(atPath: path)
+    func removeItem(atPath path: String) async throws {
+        try await client.removeItem(atPath: path)
     }
 
-    func moveItem(atPath path: String, toPath: String) throws {
-        try client.moveItem(atPath: path, toPath: toPath)
+    func moveItem(atPath path: String, toPath: String) async throws {
+        try await client.moveItem(atPath: path, toPath: toPath)
     }
 
-    func destinationOfSymbolicLink(atPath path: String) throws -> String {
-        try client.destinationOfSymbolicLink(atPath: path)
+    func destinationOfSymbolicLink(atPath path: String) async throws -> String {
+        try await client.destinationOfSymbolicLink(atPath: path)
     }
 
-    func createSymbolicLink(atPath path: String, withDestinationPath destination: String) throws {
-        try client.createSymbolicLink(atPath: path, withDestinationPath: destination)
+    func createSymbolicLink(atPath path: String, withDestinationPath destination: String) async throws {
+        try await client.createSymbolicLink(atPath: path, withDestinationPath: destination)
     }
 
-    func read(path: String, offset: UInt64, length: Int) throws -> Data {
-        try client.read(path: path, offset: offset, length: length)
+    func read(path: String, offset: UInt64, length: Int) async throws -> Data {
+        try await client.read(path: path, offset: offset, length: length)
     }
 
     func closeHandle(forPath path: String) {
         client.closeHandle(forPath: path)
     }
 
-    func flushAll() throws {
-        try client.flushAll()
+    func flushAll() async throws {
+        try await client.flushAll()
     }
 
-    func write(path: String, data: Data, offset: UInt64) throws -> Int {
-        try client.write(path: path, data: data, offset: offset)
+    func write(path: String, data: Data, offset: UInt64) async throws -> Int {
+        try await client.write(path: path, data: data, offset: offset)
     }
 }

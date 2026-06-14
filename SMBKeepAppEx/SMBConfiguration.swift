@@ -1,25 +1,23 @@
 /*
-See the LICENSE.txt file for this sample's licensing information.
+许可信息见本示例的 LICENSE.txt 文件。
 
-Abstract:
-SMB server settings for the passthrough file system extension,
- read from the shared App Group container written by the main app.
+摘要：
+透传文件系统扩展所用的 SMB 服务器设置，
+从主 App 写入的共享 App Group 容器中读取。
 */
 
 import Foundation
 import OSLog
 
-/// Connection parameters for the backing SMB share.
+/// 后端 SMB 共享的连接参数。
 ///
-/// FSKit extensions cannot read the App Group container (the sandbox profile
-/// doesn't expose it), so the main app instead writes a per-connection
-/// `mount-config.json` into a directory it owns and passes that directory as the
-/// *source* argument to `mount`. FSKit hands that directory to the extension as
-/// an `FSPathURLResource` with security-scoped access, and we read the config
-/// from there in `loadResource`. Each mount has its own source directory, so
-/// multiple connections can be mounted at once without clobbering each other.
+/// FSKit 扩展无法读取 App Group 容器（沙盒配置不暴露它），因此主 App 改为把一个每连接独立的
+/// `mount-config.json` 写入它自己拥有的目录，并把该目录作为 `mount` 的 *source* 参数传入。
+/// FSKit 会以带安全作用域访问权限的 `FSPathURLResource` 把该目录交给扩展，
+/// 我们在 `loadResource` 中从那里读取配置。每次挂载都有各自独立的 source 目录，
+/// 因此多个连接可以同时挂载而互不干扰。
 struct SMBConfiguration {
-    /// File name written by the main app inside the mount source directory.
+    /// 主 App 写入挂载 source 目录中的文件名。
     static let configFileName = "mount-config.json"
 
     let serverURL: URL
@@ -28,7 +26,6 @@ struct SMBConfiguration {
     let username: String
     let password: String
     let volumeNameSuffix: String
-    let operationTimeout: TimeInterval
     let connectionID: String
     let displayName: String
     let localUID: uid_t
@@ -40,9 +37,8 @@ struct SMBConfiguration {
         URLCredential(user: username, password: password, persistence: .forSession)
     }
 
-    /// Load configuration from a mount source directory delivered by FSKit as an
-    /// `FSPathURLResource`. The caller is responsible for starting/stopping
-    /// security-scoped access on `directory` around this call.
+    /// 从 FSKit 以 `FSPathURLResource` 形式交付的挂载 source 目录中加载配置。
+    /// 调用方需负责在此调用前后对 `directory` 启动/停止安全作用域访问。
     static func load(fromSourceDirectory directory: URL) -> SMBConfiguration? {
         let configURL = directory.appendingPathComponent(configFileName)
         guard let data = try? Data(contentsOf: configURL) else {
@@ -52,7 +48,7 @@ struct SMBConfiguration {
         return parse(data: data)
     }
 
-    /// Parse a `mount-config.json` payload into a configuration.
+    /// 把 `mount-config.json` 的内容解析为一个配置对象。
     static func parse(data: Data) -> SMBConfiguration? {
         do {
             guard let json = try JSONSerialization.jsonObject(with: data) as? [String: String], let url = json["serverURL"], let serverURL = URL(string: url) else {
@@ -65,7 +61,6 @@ struct SMBConfiguration {
                 username: json["username"] ?? "",
                 password: json["password"] ?? "",
                 volumeNameSuffix: defaultVolumeNameSuffix,
-                operationTimeout: TimeInterval(json["operationTimeout"] ?? "120") ?? 120,
                 connectionID: json["connectionID"] ?? UUID().uuidString,
                 displayName: json["displayName"] ?? json["shareName"] ?? "SMB Share",
                 localUID: uid_t(json["localUID"] ?? "\(getuid())") ?? getuid(),

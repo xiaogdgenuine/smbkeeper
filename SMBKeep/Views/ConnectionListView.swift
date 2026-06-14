@@ -1,8 +1,8 @@
 /*
-See the LICENSE.txt file for this sample's licensing information.
+许可信息见本示例的 LICENSE.txt 文件。
 
-Abstract:
-Main list view of SMB connections with mount/unmount controls.
+摘要：
+带挂载/卸载控制的 SMB 连接主列表视图。
 */
 
 import SwiftUI
@@ -30,7 +30,7 @@ struct ConnectionListView: View {
         }
     }
 
-    // MARK: - List
+    // MARK: - 列表
 
     private var listContent: some View {
         List(selection: $selectedConnectionID) {
@@ -49,7 +49,7 @@ struct ConnectionListView: View {
         }
     }
 
-    // MARK: - Toolbar
+    // MARK: - 工具栏
 
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
@@ -75,7 +75,7 @@ struct ConnectionListView: View {
         }
     }
 
-    // MARK: - Detail
+    // MARK: - 详情
 
     private var detailContent: some View {
         Group {
@@ -94,7 +94,7 @@ struct ConnectionListView: View {
     }
 }
 
-// MARK: - Connection Row
+// MARK: - 连接行
 
 struct ConnectionRow: View {
     let connection: SMBConnection
@@ -138,7 +138,7 @@ struct ConnectionRow: View {
     }
 }
 
-// MARK: - Connection Detail View
+// MARK: - 连接详情视图
 
 struct ConnectionDetailView: View {
     @EnvironmentObject var connectionManager: SMBConnectionManager
@@ -186,7 +186,7 @@ struct ConnectionDetailView: View {
         }
     }
 
-    // MARK: - Header
+    // MARK: - 页头
 
     private var connectionHeader: some View {
         HStack {
@@ -244,7 +244,7 @@ struct ConnectionDetailView: View {
         }
     }
 
-    // MARK: - Info Tab
+    // MARK: - 信息标签页
 
     private var infoTab: some View {
         ScrollView {
@@ -298,7 +298,6 @@ struct ConnectionDetailView: View {
                         DetailRow(label: "服务器", value: liveConnection.serverURL)
                         DetailRow(label: "共享名", value: liveConnection.shareName)
                         DetailRow(label: "用户名", value: liveConnection.username)
-                        DetailRow(label: "超时", value: "\(Int(liveConnection.operationTimeout))秒")
                         DetailRow(label: "UUID", value: liveConnection.id.uuidString)
                     }
                     .padding(.vertical, 4)
@@ -311,7 +310,7 @@ struct ConnectionDetailView: View {
     }
 }
 
-// MARK: - Supporting Views
+// MARK: - 辅助视图
 
 struct StatusBadge: View {
     let isMounted: Bool

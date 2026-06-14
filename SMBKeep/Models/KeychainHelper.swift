@@ -1,8 +1,8 @@
 /*
-See the LICENSE.txt file for this sample's licensing information.
+许可信息见本示例的 LICENSE.txt 文件。
 
-Abstract:
-Keychain wrapper for securely storing SMB connection passwords.
+摘要：
+用于安全存储 SMB 连接密码的 Keychain 封装。
 */
 
 import Foundation

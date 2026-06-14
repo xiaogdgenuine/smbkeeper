@@ -1,8 +1,8 @@
 /*
-See the LICENSE.txt file for this sample’s licensing information.
+许可信息见本示例的 LICENSE.txt 文件。
 
-Abstract:
-The custom class that implements a simplified file system backed by SMB (AMSMB2).
+摘要：
+实现以 SMB（AMSMB2）为后端的简化文件系统的自定义类。
 */
 
 import Foundation
@@ -12,12 +12,12 @@ extension Logger {
     static let smbkeepfs = Logger(subsystem: "com.apple.fskit.SMBKeepFS", category: "default")
 }
 
-/// Returns the current `errno` value as a `POSIXError`.
+/// 把当前的 `errno` 值包装成 `POSIXError` 返回。
 var posixErrno: POSIXError {
     POSIXError(POSIXError.Code(rawValue: errno) ?? .EINVAL)
 }
 
-/// Returns the result of the given block, or throws an error if `errno` is nonzero.
+/// 返回给定闭包的结果；若 `errno` 非零则抛出错误。
 func throwErrno<T: SignedInteger>(_ block: () throws -> T) throws -> T {
     let ret = try block()
     guard ret >= 0 else {
@@ -30,15 +30,13 @@ func throwErrno<T: SignedInteger>(_ block: () throws -> T) throws -> T {
     return ret
 }
 
-/// Read the SMB config for a mount from the `FSPathURLResource` that FSKit hands
-/// the extension. The main app passes a per-connection directory (containing
-/// `mount-config.json`) as the mount *source*, and FSKit grants security-scoped
-/// access to it because `FSRequiresSecurityScopedPathURLResources` is set.
+/// 从 FSKit 交给扩展的 `FSPathURLResource` 中读取本次挂载的 SMB 配置。
+/// 主 App 把一个每连接独立的目录（内含 `mount-config.json`）作为挂载的 *source* 传入，
+/// 由于设置了 `FSRequiresSecurityScopedPathURLResources`，FSKit 会授予对它的安全作用域访问权限。
 ///
-/// This is the only channel that works for FSKit extensions: the App Group
-/// container is not exposed to the extension's sandbox, so reading shared files
-/// from there fails. Reading from the resource also keeps each mount's config
-/// independent, which is what lets multiple connections mount simultaneously.
+/// 这是 FSKit 扩展唯一可行的通道：App Group 容器不会暴露给扩展的沙盒，
+/// 因此从那里读取共享文件会失败。从该资源读取还能让每次挂载的配置相互独立，
+/// 这正是允许多个连接同时挂载的前提。
 private func loadConfig(from resource: FSResource) -> SMBConfiguration? {
     guard let urlResource = resource as? FSPathURLResource else {
         Logger.smbkeepfs.error("Resource is not an FSPathURLResource: \(type(of: resource))")
@@ -50,7 +48,7 @@ private func loadConfig(from resource: FSResource) -> SMBConfiguration? {
     return SMBConfiguration.load(fromSourceDirectory: url)
 }
 
-/// A file system that exposes an SMB share through FSKit.
+/// 通过 FSKit 暴露一个 SMB 共享的文件系统。
 @objc
 class SMBKeepFileSystem: FSUnaryFileSystem & FSUnaryFileSystemOperations {
 
@@ -67,23 +65,32 @@ class SMBKeepFileSystem: FSUnaryFileSystem & FSUnaryFileSystemOperations {
             return replyHandler(nil, POSIXError(.EINVAL))
         }
 
+        // 用从挂载 source 读到的配置初始化 SMB 后端。
+        let backend = SMBBackend(config: smbConfig)
+        let volumeName = FSFileName(string: smbConfig.displayName + smbConfig.volumeNameSuffix)
+        let volume: SMBKeepFSVolume
         do {
-            // Initialize the SMB backend with the config read from the mount source.
-            let backend = try SMBBackend(config: smbConfig)
-            let volumeName = FSFileName(string: smbConfig.displayName + smbConfig.volumeNameSuffix)
-            let volume = try SMBKeepFSVolume(backend: backend,
-                                             volumeName: volumeName,
-                                             smbConfig: smbConfig)
-            self.containerStatus = .ready
-            self.loadedVolume = volume
-
-            // Write a startup log entry
-            volume.log("Volume mounted: \(smbConfig.displayName) at \(smbConfig.serverURL)/\(smbConfig.shareName)")
-
-            return replyHandler(volume, nil)
+            volume = try SMBKeepFSVolume(backend: backend,
+                                         volumeName: volumeName,
+                                         smbConfig: smbConfig)
         } catch {
-            Logger.smbkeepfs.error("\(#function): SMB setup failed: \(error)")
+            Logger.smbkeepfs.error("\(#function): volume setup failed: \(error)")
             return replyHandler(nil, error)
+        }
+        self.loadedVolume = volume
+
+        // 异步建立 SMB 连接，连接成功后再上报就绪。
+        Task {
+            do {
+                try await backend.connect()
+                self.containerStatus = .ready
+                volume.log("Volume mounted: \(smbConfig.displayName) at \(smbConfig.serverURL)/\(smbConfig.shareName)")
+                replyHandler(volume, nil)
+            } catch {
+                Logger.smbkeepfs.error("\(#function): SMB connect failed: \(error)")
+                self.loadedVolume = nil
+                replyHandler(nil, error)
+            }
         }
     }
 
@@ -103,8 +110,8 @@ class SMBKeepFileSystem: FSUnaryFileSystem & FSUnaryFileSystemOperations {
         }
 
         let name = config.displayName + config.volumeNameSuffix
-        // Derive a stable container ID from the connection so each connection
-        // gets a distinct container and multiple mounts don't collide.
+        // 从连接派生出稳定的 container ID，让每个连接得到各自独立的 container，
+        // 从而多个挂载之间不会冲突。
         let containerUUID = UUID(uuidString: config.connectionID) ?? UUID()
         let containerID = FSContainerIdentifier(uuid: containerUUID)
         let probeResult = FSProbeResult.usable(name: name, containerID: containerID)

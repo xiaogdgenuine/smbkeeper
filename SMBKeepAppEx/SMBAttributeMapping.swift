@@ -1,8 +1,8 @@
 /*
-See the LICENSE.txt file for this sample’s licensing information.
+许可信息见本示例的 LICENSE.txt 文件。
 
-Abstract:
-Maps AMSMB2 / URL resource keys into FSKit item attributes.
+摘要：
+把 AMSMB2 / URL 资源键映射为 FSKit 的 item 属性。
 */
 
 import Foundation
@@ -37,9 +37,9 @@ enum SMBAttributeMapping {
     static func inode(from attributes: [URLResourceKey: any Sendable], fallbackPath: String) -> UInt64 {
         if let ino = attributes[.documentIdentifierKey] as? NSNumber {
             let value = ino.uint64Value
-            // Some SMB servers report 0 (or otherwise unusable) file IDs for
-            // directory entries. Treat that as missing; using 0 would make many
-            // entries share one FSKit item identity and poison the item cache.
+            // 有些 SMB 服务器为目录项返回 0（或其它不可用的）file ID。
+            // 视为缺失处理；若用 0，会让许多条目共用同一个 FSKit item 身份，
+            // 从而污染 item 缓存。
             if value != 0 {
                 return value
             }
@@ -48,10 +48,9 @@ enum SMBAttributeMapping {
     }
 
     static func inodeForPath(_ path: String) -> UInt64 {
-        // Deterministic FNV-1a fallback. Swift's Hasher is randomized per
-        // process; FSKit only needs identities stable for a mounted volume, but
-        // deterministic values make diagnostics and cache behavior easier to
-        // reason about. Reserve 0 for invalid/missing identity.
+        // 确定性的 FNV-1a 回退方案。Swift 的 Hasher 每个进程都会随机化；
+        // FSKit 只要求身份在一次挂载内稳定，但确定性的值让诊断和缓存行为更易推理。
+        // 保留 0 表示无效/缺失身份。
         var hash: UInt64 = 1_469_598_103_934_665_603
         for byte in path.utf8 {
             hash ^= UInt64(byte)
@@ -82,9 +81,8 @@ enum SMBAttributeMapping {
         if desired.isAttributeWanted(.flags) {
             attrs.flags = 0
         }
-        // Always report size/allocSize, even for directories and symlinks: FSKit's
-        // standard attribute set requires them, and omitting them yields an
-        // "attributes are incomplete" error.
+        // 始终上报 size/allocSize，即便是目录和符号链接：FSKit 的标准属性集要求它们，
+        // 缺失会导致 “attributes are incomplete” 错误。
         if desired.isAttributeWanted(.size) {
             attrs.size = (attributes[.fileSizeKey] as? NSNumber)?.uint64Value ?? 0
         }

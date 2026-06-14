@@ -1,8 +1,8 @@
 /*
-See the LICENSE.txt file for this sample’s licensing information.
+许可信息见本示例的 LICENSE.txt 文件。
 
-Abstract:
-A class that defines a custom item for use by the passthrough file system.
+摘要：
+定义透传文件系统所用的自定义 item 的类。
 */
 
 import Foundation
@@ -10,108 +10,199 @@ import ExtensionFoundation
 import FSKit
 import OSLog
 
-/// Defined item open modes.
+/// 定义的 item 打开模式。
 enum SMBKeepFSItemOpenMode: Int32 {
     case close = -1
     case readOnly = 0
     case readWrite = 1
 }
 
-/// A SMBKeepFSItem represents a file system item backed by an SMB path.
+/// SMBKeepFSItem 表示一个以 SMB 路径为后端的文件系统 item。
 class SMBKeepFSItem: FSItem {
 
-    var smbPath: String
-    var openMode: SMBKeepFSItemOpenMode
-    var parent: SMBKeepFSItem?
-    var name: String
-    var itemType: FSItem.ItemType
-    var inode: UInt64
-    let openModeLock = NSLock()
+    private let stateLock = NSLock()
+    private var _smbPath: String
+    private var _openMode: SMBKeepFSItemOpenMode
+    private var _parent: SMBKeepFSItem?
+    private var _name: String
+    private var _itemType: FSItem.ItemType
+    private var _inode: UInt64
 
-    /// Attributes captured during directory enumeration; avoids per-entry `stat` on lookup/getattr.
-    var cachedRaw: SMBKeepRawAttributes?
-    /// When ``cachedRaw`` was last refreshed; used to expire stale attribute caches.
-    var cachedRawAt: Date?
+    /// 目录枚举时捕获的属性；避免在 lookup/getattr 时对每个条目再做一次 `stat`。
+    private var _cachedRaw: SMBKeepRawAttributes?
+    /// ``cachedRaw`` 上次刷新的时间；用于让过期的属性缓存失效。
+    private var _cachedRawAt: Date?
+
+    struct StateSnapshot {
+        let name: String
+        let smbPath: String
+        let parent: SMBKeepFSItem?
+        let itemType: FSItem.ItemType
+        let inode: UInt64
+        let cachedRaw: SMBKeepRawAttributes?
+        let cachedRawAt: Date?
+    }
+
+    var smbPath: String {
+        self.stateLock.lock()
+        defer { self.stateLock.unlock() }
+        return self._smbPath
+    }
+
+    var parent: SMBKeepFSItem? {
+        self.stateLock.lock()
+        defer { self.stateLock.unlock() }
+        return self._parent
+    }
+
+    var name: String {
+        self.stateLock.lock()
+        defer { self.stateLock.unlock() }
+        return self._name
+    }
+
+    var itemType: FSItem.ItemType {
+        self.stateLock.lock()
+        defer { self.stateLock.unlock() }
+        return self._itemType
+    }
+
+    var inode: UInt64 {
+        self.stateLock.lock()
+        defer { self.stateLock.unlock() }
+        return self._inode
+    }
 
     var fileDescriptor: Int32 { -1 }
 
     init(name: String, smbPath: String, type: FSItem.ItemType, openFlags: SMBKeepFSItemOpenMode, inode: UInt64) {
-        self.name = name
-        self.parent = nil
-        self.smbPath = smbPath
-        self.itemType = type
-        self.openMode = openFlags
-        self.inode = inode
+        self._name = name
+        self._parent = nil
+        self._smbPath = smbPath
+        self._itemType = type
+        self._openMode = openFlags
+        self._inode = inode
         super.init()
     }
 
-    /// Creates a child item using data already returned by `readdir` / directory listing.
+    /// 用 `readdir` / 目录列举已返回的数据创建子 item。
     init(name: String, parent: SMBKeepFSItem, smbPath: String, type: FSItem.ItemType,
          inode: UInt64, cachedRaw: SMBKeepRawAttributes?) {
-        self.name = name
-        self.parent = parent
-        self.openMode = .close
-        self.smbPath = smbPath
-        self.itemType = type
-        self.inode = inode
-        self.cachedRaw = cachedRaw
-        self.cachedRawAt = cachedRaw != nil ? Date() : nil
+        self._name = name
+        self._parent = parent
+        self._openMode = .close
+        self._smbPath = smbPath
+        self._itemType = type
+        self._inode = inode
+        self._cachedRaw = cachedRaw
+        self._cachedRawAt = cachedRaw != nil ? Date() : nil
         super.init()
     }
 
-    /// Creates a child item after a mutating operation; one `stat` to refresh identity.
-    init(name: String, parent: SMBKeepFSItem, type: FSItem.ItemType, backend: SMBBackend) throws {
-        self.name = name
-        self.parent = parent
-        self.openMode = .close
-        self.itemType = type
-        self.smbPath = parent.smbPath.appendingSMBComponent(name)
-        self.inode = 0
-        self.cachedRaw = nil
+    /// 在一次写操作后创建子 item；做一次 `stat` 来刷新身份。
+    init(name: String, parent: SMBKeepFSItem, type: FSItem.ItemType, backend: SMBBackend) async throws {
+        let smbPath = parent.smbPath.appendingSMBComponent(name)
+        self._name = name
+        self._parent = parent
+        self._openMode = .close
+        self._itemType = type
+        self._smbPath = smbPath
+        self._inode = 0
+        self._cachedRaw = nil
+        self._cachedRawAt = nil
         super.init()
-        let attrs = try backend.attributesOfItem(atPath: self.smbPath)
-        self.inode = SMBAttributeMapping.inode(from: attrs, fallbackPath: self.smbPath)
-        self.cachedRaw = SMBAttributeMapping.rawAttributes(from: attrs, path: self.smbPath)
-        self.cachedRawAt = Date()
+        let attrs = try await backend.attributesOfItem(atPath: smbPath)
+        let inode = SMBAttributeMapping.inode(from: attrs, fallbackPath: smbPath)
+        let raw = SMBAttributeMapping.rawAttributes(from: attrs, path: smbPath)
+        self.stateLock.lock()
+        self._inode = inode
+        self._cachedRaw = raw
+        self._cachedRawAt = Date()
         if let resourceType = attrs[.fileResourceTypeKey] as? URLFileResourceType {
-            self.itemType = SMBAttributeMapping.itemType(from: resourceType)
+            self._itemType = SMBAttributeMapping.itemType(from: resourceType)
         }
+        self.stateLock.unlock()
     }
 
     func upgradeOpenMode(mode: SMBKeepFSItemOpenMode) throws {
         if mode == .close {
             throw POSIXError(.EINVAL)
         }
-        self.openModeLock.lock()
-        defer { self.openModeLock.unlock() }
-        if self.openMode == .readWrite || self.openMode == mode {
+        self.stateLock.lock()
+        defer { self.stateLock.unlock() }
+        if self._openMode == .readWrite || self._openMode == mode {
             return
         }
-        self.openMode = mode
+        self._openMode = mode
     }
 
     func forceReopen(mode: SMBKeepFSItemOpenMode) throws {
-        self.openModeLock.lock()
-        self.openMode = .close
-        self.openModeLock.unlock()
+        self.stateLock.lock()
+        self._openMode = .close
+        self.stateLock.unlock()
         try self.upgradeOpenMode(mode: mode)
     }
 
     func closeItem() throws {
-        self.openModeLock.lock()
-        defer { self.openModeLock.unlock() }
-        self.openMode = .close
+        self.stateLock.lock()
+        defer { self.stateLock.unlock() }
+        self._openMode = .close
     }
 
     func clearCachedMetadata() {
-        self.cachedRaw = nil
-        self.cachedRawAt = nil
+        self.stateLock.lock()
+        defer { self.stateLock.unlock() }
+        self._cachedRaw = nil
+        self._cachedRawAt = nil
     }
 
-    /// Whether the cached attributes are still within the given freshness window.
+    /// 缓存的属性是否仍在给定的新鲜度窗口内。
     func isAttributeCacheValid(ttl: TimeInterval) -> Bool {
-        guard cachedRaw != nil, let at = cachedRawAt else { return false }
+        self.stateLock.lock()
+        defer { self.stateLock.unlock() }
+        guard _cachedRaw != nil, let at = _cachedRawAt else { return false }
         return Date().timeIntervalSince(at) < ttl
+    }
+
+    func stateSnapshot() -> StateSnapshot {
+        self.stateLock.lock()
+        defer { self.stateLock.unlock() }
+        return StateSnapshot(name: self._name,
+                             smbPath: self._smbPath,
+                             parent: self._parent,
+                             itemType: self._itemType,
+                             inode: self._inode,
+                             cachedRaw: self._cachedRaw,
+                             cachedRawAt: self._cachedRawAt)
+    }
+
+    func cachedRawIfValid(ttl: TimeInterval) -> SMBKeepRawAttributes? {
+        self.stateLock.lock()
+        defer { self.stateLock.unlock() }
+        guard let raw = self._cachedRaw,
+              let at = self._cachedRawAt,
+              Date().timeIntervalSince(at) < ttl else {
+            return nil
+        }
+        return raw
+    }
+
+    func updateCachedMetadata(_ raw: SMBKeepRawAttributes, ifCurrentPath expectedPath: String? = nil) {
+        self.stateLock.lock()
+        defer { self.stateLock.unlock() }
+        if let expectedPath, self._smbPath != expectedPath { return }
+        self._cachedRaw = raw
+        self._cachedRawAt = Date()
+    }
+
+    func updateIdentityAfterRename(name: String, parent: SMBKeepFSItem, smbPath: String) {
+        self.stateLock.lock()
+        defer { self.stateLock.unlock() }
+        self._name = name
+        self._parent = parent
+        self._smbPath = smbPath
+        self._cachedRaw = nil
+        self._cachedRawAt = nil
     }
 }
 

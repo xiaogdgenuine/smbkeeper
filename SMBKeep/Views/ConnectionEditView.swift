@@ -1,8 +1,8 @@
 /*
-See the LICENSE.txt file for this sample's licensing information.
+许可信息见本示例的 LICENSE.txt 文件。
 
-Abstract:
-Sheet view for adding or editing an SMB connection.
+摘要：
+用于添加或编辑 SMB 连接的 Sheet 视图。
 */
 
 import SwiftUI
@@ -16,7 +16,6 @@ struct ConnectionEditView: View {
     @State private var connectionPath: String = "192.168.1."
     @State private var username: String = ""
     @State private var password: String = ""
-    @State private var operationTimeout: Double = 120
 
     private var isEditing: Bool { connection != nil }
 
@@ -96,16 +95,6 @@ struct ConnectionEditView: View {
                     TextField("用户名（留空则匿名访问）", text: $username)
                     SecureField("密码", text: $password)
                 }
-
-                Section("高级设置") {
-                    VStack(alignment: .leading) {
-                        HStack {
-                            Text("操作超时: \(Int(operationTimeout))秒")
-                            Spacer()
-                        }
-                        Slider(value: $operationTimeout, in: 10...300, step: 10)
-                    }
-                }
             }
             .formStyle(.grouped)
             .navigationTitle(isEditing ? "编辑连接" : "新建连接")
@@ -133,7 +122,6 @@ struct ConnectionEditView: View {
                     }
                     username = conn.username
                     password = conn.password
-                    operationTimeout = conn.operationTimeout
                 }
             }
         }
@@ -157,7 +145,6 @@ struct ConnectionEditView: View {
             username: username.trimmingCharacters(in: .whitespaces),
             password: password,
             mountPath: connection?.mountPath ?? "",
-            operationTimeout: operationTimeout,
             isMounted: connection?.isMounted ?? false,
             volumeUUID: connection?.volumeUUID ?? ""
         )

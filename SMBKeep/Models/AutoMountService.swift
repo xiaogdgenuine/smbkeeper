@@ -1,10 +1,9 @@
 /*
-See the LICENSE.txt file for this sample's licensing information.
+许可信息见本示例的 LICENSE.txt 文件。
 
-Abstract:
-Performs unattended mounting of previously-mounted connections when the app is
-launched at login. Passwords are read from the Keychain by the app itself, so
-no sensitive data is stored in any startup script or launch agent.
+摘要：
+当 App 在登录时启动时，对先前已挂载的连接执行无人值守挂载。
+密码由 App 自己从 Keychain 读取，因此不会在启动脚本或 launch agent 中存储敏感数据。
 */
 
 import Foundation
@@ -14,8 +13,8 @@ import OSLog
 enum AutoMountService {
     private static let logger = Logger(subsystem: "com.example.smbkeep.automount", category: "AutoMountService")
 
-    /// Mount every connection the user had mounted last (tracked in
-    /// `autoMountUUIDs`). Runs silently when `silent` is true (no admin prompt).
+    /// 挂载用户上次挂载过的所有连接（记录在 `autoMountUUIDs` 中）。
+    /// 当 `silent` 为 true 时静默运行（不弹出管理员授权）。
     static func mountSavedConnections(silent: Bool = true) async {
         let manager = SMBConnectionManager()
         let mounter = MountManager(manager: manager)

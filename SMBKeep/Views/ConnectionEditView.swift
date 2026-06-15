@@ -34,7 +34,10 @@ struct ConnectionEditView: View {
                 return String(first)
             }
         }
-        return parsedServer
+        // 只填了服务器、没填共享名时返回空。
+        // 绝不能兜底成服务器名：那样 tree connect 会连到不存在的 \\server\server，
+        // 服务器返回 STATUS_BAD_NETWORK_NAME。
+        return ""
     }
 
     private var parsedStartingPath: String {
@@ -129,7 +132,7 @@ struct ConnectionEditView: View {
     }
 
     private var isValid: Bool {
-        !parsedServer.isEmpty
+        !parsedServer.isEmpty && !parsedShare.isEmpty
     }
 
     private func save() {

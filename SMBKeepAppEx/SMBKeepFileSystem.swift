@@ -5,8 +5,33 @@
 实现以 SMB（AMSMB2）为后端的简化文件系统的自定义类。
 */
 
+import Darwin
 import Foundation
 import FSKit
+
+#if DEBUG
+/// 当前进程是否已被调试器 attach（通过 `P_TRACED` 标志判断）。
+private func isDebuggerAttached() -> Bool {
+    var info = kinfo_proc()
+    var size = MemoryLayout<kinfo_proc>.stride
+    var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, getpid()]
+    guard sysctl(&mib, UInt32(mib.count), &info, &size, nil, 0) == 0 else {
+        return false
+    }
+    return (info.kp_proc.p_flag & P_TRACED) != 0
+}
+
+/// 仅 active（loadResource）实例会调用；probe 实例不受影响。
+/// 挂载后在此阻塞，直到 Xcode attach 到本 PID。
+private func waitForDebuggerAttach() {
+    let pid = getpid()
+    TimestampedLogger.smbkeepfs.debug("loadResource active PID=\(pid)，等待调试器 attach…")
+    while !isDebuggerAttached() {
+        sleep(1)
+    }
+    TimestampedLogger.smbkeepfs.debug("调试器已 attach，继续 loadResource (PID=\(pid))")
+}
+#endif
 
 extension TimestampedLogger {
     static let smbkeepfs = TimestampedLogger(subsystem: "com.apple.fskit.SMBKeepFS", category: "default")
@@ -60,6 +85,9 @@ class SMBKeepFileSystem: FSUnaryFileSystem & FSUnaryFileSystemOperations {
 
     public func loadResource(resource: FSResource, options: FSTaskOptions,
                              replyHandler: @escaping (FSVolume?, (any Error)?) -> Void) {
+//#if DEBUG
+//        waitForDebuggerAttach()
+//#endif
 
         guard let smbConfig = loadConfig(from: resource) else {
             return replyHandler(nil, POSIXError(.EINVAL))

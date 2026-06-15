@@ -5,6 +5,7 @@
 管理存储在共享 App Group 容器中的 SMB 连接配置。
 */
 
+import AppKit
 import Foundation
 import OSLog
 
@@ -20,6 +21,9 @@ class SMBConnectionManager: ObservableObject {
     @Published var autoMountUUIDs: Set<UUID> = []
 
     private let logger = TimestampedLogger(subsystem: "com.example.smbkeep.manager", category: "SMBConnectionManager")
+    private var mountStateMonitorTask: Task<Void, Never>?
+    private var workspaceObservers: [NSObjectProtocol] = []
+    private var appObservers: [NSObjectProtocol] = []
 
     static let connectionsFileName = "smb_connections.json"
     static let activeMountsFileName = "active_mounts.json"
@@ -57,6 +61,17 @@ class SMBConnectionManager: ObservableObject {
         loadActiveMounts()
         loadAutoMount()
         reconcileMountStateWithSystem()
+        startMountStateMonitoring()
+    }
+
+    deinit {
+        mountStateMonitorTask?.cancel()
+        for token in workspaceObservers {
+            NSWorkspace.shared.notificationCenter.removeObserver(token)
+        }
+        for token in appObservers {
+            NotificationCenter.default.removeObserver(token)
+        }
     }
 
     // MARK: - 连接持久化
@@ -207,22 +222,16 @@ class SMBConnectionManager: ObservableObject {
 
     /// 对照系统挂载表校验每条标记为“已挂载”的连接，
     /// 并清除卷已被外部卸载的陈旧条目。
-    func reconcileMountStateWithSystem() {
-        let fm = FileManager.default
-        let bundleID = Bundle.main.bundleIdentifier ?? "com.example.smbkeep"
-        let appSupport = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
-        guard let appDir = appSupport?.appendingPathComponent(bundleID) else { return }
-
+    /// 不会修改 `autoMountUUIDs`，因此 Finder 外部卸载后仍可在下次登录时自动恢复。
+    @discardableResult
+    func reconcileMountStateWithSystem() -> Bool {
         let mountOutput = Self.runMountList()
         var changed = false
 
         for i in self.connections.indices {
             guard self.connections[i].isMounted else { continue }
-            let mountPoint = appDir
-                .appendingPathComponent(self.connections[i].displayName.trimmingCharacters(in: .whitespaces))
-                .path
-            let marker = " on \(mountPoint) "
-            if !mountOutput.contains(marker) {
+            guard let mountPoint = Self.mountPointPath(for: self.connections[i]) else { continue }
+            if !Self.isMountPointPresent(mountPoint, in: mountOutput) {
                 self.connections[i].isMounted = false
                 self.activeVolumeUUIDs.remove(self.connections[i].id)
                 changed = true
@@ -234,6 +243,58 @@ class SMBConnectionManager: ObservableObject {
             saveConnections()
             saveActiveMounts()
         }
+        return changed
+    }
+
+    /// 监听系统挂载变化，并在 App 重新激活时同步状态。
+    func startMountStateMonitoring() {
+        guard mountStateMonitorTask == nil else { return }
+
+        let workspaceCenter = NSWorkspace.shared.notificationCenter
+        for name in [NSWorkspace.didMountNotification, NSWorkspace.didUnmountNotification] {
+            let token = workspaceCenter.addObserver(
+                forName: name,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                self?.reconcileMountStateWithSystem()
+            }
+            workspaceObservers.append(token)
+        }
+
+        let activeToken = NotificationCenter.default.addObserver(
+            forName: NSApplication.didBecomeActiveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.reconcileMountStateWithSystem()
+        }
+        appObservers.append(activeToken)
+
+        // 轮询作为兜底：部分 FSKit 卸载路径可能不会及时投递 workspace 通知。
+        mountStateMonitorTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 5_000_000_000)
+                self?.reconcileMountStateWithSystem()
+            }
+        }
+    }
+
+    static func mountPointPath(for connection: SMBConnection) -> String? {
+        let fm = FileManager.default
+        let bundleID = Bundle.main.bundleIdentifier ?? "com.example.smbkeep"
+        guard let appSupport = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
+            return nil
+        }
+        let appDir = appSupport.appendingPathComponent(bundleID)
+        return appDir
+            .appendingPathComponent(connection.displayName.trimmingCharacters(in: .whitespaces))
+            .path
+    }
+
+    private static func isMountPointPresent(_ mountPoint: String, in mountOutput: String) -> Bool {
+        let marker = " on \(mountPoint) "
+        return mountOutput.contains(marker)
     }
 
     private static func runMountList() -> String {

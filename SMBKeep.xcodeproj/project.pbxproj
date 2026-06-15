@@ -7,8 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		7723AB012FDD36BB001A7A2E /* AMSMB2 in Frameworks */ = {isa = PBXBuildFile; productRef = 7723AB002FDD36BB001A7A2E /* AMSMB2 */; };
-		779585D82FDD6E6C0070FD25 /* AMSMB2 in Embed Frameworks */ = {isa = PBXBuildFile; productRef = 7723AB002FDD36BB001A7A2E /* AMSMB2 */; settings = {ATTRIBUTES = (CodeSignOnCopy, ); }; };
+		7723AB012FDD36BB001A7A2E /* SMB2 in Frameworks */ = {isa = PBXBuildFile; productRef = 7723AB002FDD36BB001A7A2E /* SMB2 */; };
 		77D2E2EF2FDE4D8D00B73F5B /* Semaphore in Frameworks */ = {isa = PBXBuildFile; productRef = 77D2E2EE2FDE4D8D00B73F5B /* Semaphore */; };
 		D3BA958B2D9D753400FAF4A2 /* SMBKeepAppEx.appex in Embed ExtensionKit Extensions */ = {isa = PBXBuildFile; fileRef = D3BA95812D9D753400FAF4A2 /* SMBKeepAppEx.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		D3BA95932D9D754E00FAF4A2 /* FSKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = D3BA95922D9D754E00FAF4A2 /* FSKit.framework */; };
@@ -31,7 +30,6 @@
 			dstPath = "";
 			dstSubfolderSpec = 10;
 			files = (
-				779585D82FDD6E6C0070FD25 /* AMSMB2 in Embed Frameworks */,
 			);
 			name = "Embed Frameworks";
 			runOnlyForDeploymentPostprocessing = 0;
@@ -106,7 +104,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				7723AB012FDD36BB001A7A2E /* AMSMB2 in Frameworks */,
+				7723AB012FDD36BB001A7A2E /* SMB2 in Frameworks */,
 				D3BA95932D9D754E00FAF4A2 /* FSKit.framework in Frameworks */,
 				77D2E2EF2FDE4D8D00B73F5B /* Semaphore in Frameworks */,
 			);
@@ -183,6 +181,8 @@
 				D3BA95702D9D74FC00FAF4A2 /* SMBKeep */,
 			);
 			name = SMBKeep;
+			packageProductDependencies = (
+			);
 			productName = SMBKeep;
 			productReference = D3BA956E2D9D74FC00FAF4A2 /* SMBKeep.app */;
 			productType = "com.apple.product-type.application";
@@ -205,7 +205,7 @@
 			);
 			name = SMBKeepAppEx;
 			packageProductDependencies = (
-				7723AB002FDD36BB001A7A2E /* AMSMB2 */,
+				7723AB002FDD36BB001A7A2E /* SMB2 */,
 				77D2E2EE2FDE4D8D00B73F5B /* Semaphore */,
 			);
 			productName = appex;
@@ -240,7 +240,7 @@
 			);
 			mainGroup = D3BA95652D9D74FC00FAF4A2;
 			packageReferences = (
-				7723AAFF2FDD36BB001A7A2E /* XCLocalSwiftPackageReference "deps/AMSMB2" */,
+				7723AAFF2FDD36BB001A7A2E /* XCLocalSwiftPackageReference "deps/libsmb2" */,
 				77D2E2ED2FDE4D8D00B73F5B /* XCRemoteSwiftPackageReference "Semaphore" */,
 			);
 			preferredProjectObjectVersion = 77;
@@ -630,9 +630,9 @@
 /* End XCConfigurationList section */
 
 /* Begin XCLocalSwiftPackageReference section */
-		7723AAFF2FDD36BB001A7A2E /* XCLocalSwiftPackageReference "deps/AMSMB2" */ = {
+		7723AAFF2FDD36BB001A7A2E /* XCLocalSwiftPackageReference "deps/libsmb2" */ = {
 			isa = XCLocalSwiftPackageReference;
-			relativePath = deps/AMSMB2;
+			relativePath = deps/libsmb2;
 		};
 /* End XCLocalSwiftPackageReference section */
 
@@ -648,9 +648,9 @@
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
-		7723AB002FDD36BB001A7A2E /* AMSMB2 */ = {
+		7723AB002FDD36BB001A7A2E /* SMB2 */ = {
 			isa = XCSwiftPackageProductDependency;
-			productName = AMSMB2;
+			productName = SMB2;
 		};
 		77D2E2EE2FDE4D8D00B73F5B /* Semaphore */ = {
 			isa = XCSwiftPackageProductDependency;

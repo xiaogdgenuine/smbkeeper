@@ -16,6 +16,13 @@ class MountManager: ObservableObject {
     @Published var lastError: String?
     @Published var mountOutput: String = ""
 
+    /// 当挂载失败疑似由 FSKit 守护进程陈旧状态引起时，给出建议用户自行在终端执行的命令；
+    /// 否则为 nil。App 沙箱不允许提权执行命令，因此交由用户手动重启。
+    @Published var fskitRestartCommand: String?
+
+    /// 重启 FSKit 相关守护进程的命令。多数情况下并不需要执行，仅在挂载因陈旧状态失败时建议使用。
+    static let fskitRestartCommand = "sudo killall pkd fskitd fskit_agent"
+
     private let logger = TimestampedLogger(subsystem: "com.example.smbkeep.mount", category: "MountManager")
     private let manager: SMBConnectionManager
     init(manager: SMBConnectionManager) {
@@ -37,6 +44,7 @@ class MountManager: ObservableObject {
         isBusy = true
         lastError = nil
         mountOutput = ""
+        fskitRestartCommand = nil
 
         guard let sourceDir = manager.writeMountConfig(for: connection.id) else {
             lastError = "无法写入挂载配置"
@@ -118,10 +126,10 @@ class MountManager: ObservableObject {
                 ?? guessExtensionBundleID() else {
             return
         }
-        // 先 disable 再 enable，强制 fskitd 释放陈旧状态。
-        _ = await runShellCommand("pluginkit -e ignore -i \"\(extBundleID)\" 2>&1")
+        // 确保扩展处于启用状态即可。实测无需每次都 ignore/use 来强制 fskitd 释放陈旧状态，
+        // 那样反而拖慢挂载；陈旧状态仅在挂载失败时再处理。
         let enableOutput = await runShellCommand("pluginkit -e use -i \"\(extBundleID)\" 2>&1")
-        mountOutput += "=== pluginkit refresh ===\n\(enableOutput)\n"
+        mountOutput += "=== pluginkit enable ===\n\(enableOutput)\n"
     }
 
     private func preflightLocalSMBAccess(for connection: SMBConnection) async -> String? {
@@ -213,29 +221,16 @@ class MountManager: ObservableObject {
                 }
             }
 
-            let lowerMountOutput = mountOutput.lowercased()
-            let staleFSKitState = lowerMountOutput.contains("extensionkit.errordomain")
-                || lowerMountOutput.contains("file system named")
-                || lowerMountOutput.contains("filesystem named")
-            if staleFSKitState {
-                // fskitd 持有陈旧状态。通过管理员授权提示重启它，然后重试挂载一次。
-                let killed = await runShellCommand("osascript -e 'do shell script \"killall fskitd\" with administrator privileges' 2>&1")
-                mountOutput += "=== fskitd restart ===\n\(killed)\n\n"
-                if !killed.lowercased().contains("error") {
-                    try? await Task.sleep(nanoseconds: 2_000_000_000)
-                    for (name, cmd) in commands {
-                        logger.debug("Retrying \(name) after fskitd restart...")
-                        let retryOutput = await runShellCommand(cmd)
-                        mountOutput += "=== retry: \(name) ===\n\(retryOutput)\n\n"
-                        if await isMountPointMounted(mountPoint) {
-                            return true
-                        }
-                    }
-                }
+            // App 沙箱不允许提权执行命令，因此不再自动重启 fskitd。
+            // 仅在挂载失败疑似由 FSKit 守护进程陈旧状态引起时，提示用户自行在终端重启。
+            if mountOutputIndicatesStaleFSKitState() {
+                fskitRestartCommand = Self.fskitRestartCommand
                 lastError = """
-                    fskitd 重启后仍挂载失败。
+                    挂载失败，疑似 FSKit 守护进程状态陈旧。
 
-                    挂载点: \(mountPoint)
+                    请在「终端」中执行下方命令重启 fskitd，然后重新挂载（多数情况下并不需要这一步）：
+                    \(Self.fskitRestartCommand)
+
                     扩展 Bundle ID: \(extBundleID)
                     """
             } else {
@@ -249,6 +244,14 @@ class MountManager: ObservableObject {
             }
             return false
         }
+
+    /// 根据累计的挂载命令输出，判断失败是否疑似源于 FSKit 守护进程持有的陈旧状态。
+    private func mountOutputIndicatesStaleFSKitState() -> Bool {
+        let lower = mountOutput.lowercased()
+        return lower.contains("extensionkit.errordomain")
+            || lower.contains("file system named")
+            || lower.contains("filesystem named")
+    }
 
     private func runUnmountCommand(mountPoint: String, connection: SMBConnection) async -> Bool {
         let commands: [(title: String, command: String)] = [

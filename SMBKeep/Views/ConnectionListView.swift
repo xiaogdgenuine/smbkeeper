@@ -266,6 +266,10 @@ struct ConnectionDetailView: View {
                     )
                 }
 
+                if let restartCommand = mountManager.fskitRestartCommand {
+                    FSKitRestartHint(command: restartCommand)
+                }
+
                 if !mountManager.mountOutput.isEmpty {
                     VStack(alignment: .leading, spacing: 4) {
                         Label("命令输出", systemImage: "terminal")
@@ -311,6 +315,62 @@ struct ConnectionDetailView: View {
 }
 
 // MARK: - 辅助视图
+
+/// 挂载失败疑似源于 FSKit 守护进程陈旧状态时显示：给出可一键复制的重启命令，由用户自行在终端执行。
+struct FSKitRestartHint: View {
+    let command: String
+    @State private var copied = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label("可能需要重启 FSKit", systemImage: "arrow.clockwise.circle")
+                .font(.headline)
+                .foregroundStyle(.orange)
+
+            Text("挂载失败疑似由 FSKit 守护进程状态陈旧导致。请在「终端」中执行下方命令重启后重新挂载（多数情况下并不需要这一步）。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            HStack(spacing: 8) {
+                Text(command)
+                    .font(.system(.caption, design: .monospaced))
+                    .textSelection(.enabled)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 6)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(
+                        RoundedRectangle(cornerRadius: 6)
+                            .fill(Color(NSColor.textBackgroundColor))
+                    )
+
+                Button {
+                    copyCommand()
+                } label: {
+                    Label(copied ? "已复制" : "复制",
+                          systemImage: copied ? "checkmark" : "doc.on.doc")
+                }
+                .buttonStyle(.borderedProminent)
+            }
+        }
+        .padding()
+        .background(
+            RoundedRectangle(cornerRadius: 8)
+                .fill(Color.orange.opacity(0.1))
+        )
+    }
+
+    private func copyCommand() {
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(command, forType: .string)
+        copied = true
+        Task {
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            copied = false
+        }
+    }
+}
 
 struct StatusBadge: View {
     let isMounted: Bool

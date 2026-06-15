@@ -30,7 +30,7 @@ struct TimestampedLogger {
     }()
 
     private func compose(_ message: String) -> String {
-        "\(Self.timestampFormatter.string(from: Date())) \(message)"
+        "\(Self.timestampFormatter.string(from: Date())) SmbKeeper: \(message)"
     }
 
     func trace(_ message: @autoclosure () -> String) {

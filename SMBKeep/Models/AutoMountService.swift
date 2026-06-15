@@ -30,10 +30,14 @@ enum AutoMountService {
         let manager = SMBConnectionManager()
         let mounter = MountManager(manager: manager)
 
-        // 待挂载队列：本次仍未成功的连接。失败的会留在队列里等下一轮重试。
-        var pending = manager.connections.filter { !$0.isMounted }
+        // 待挂载队列：只挑用户标记过自动挂载（记录在 autoMountUUIDs 中）且当前未挂载的连接。
+        // autoMountUUIDs 在用户成功挂载时写入、显式卸载时移除，因此这里不会无脑挂载全部连接。
+        // 失败的会留在队列里等下一轮重试。
+        var pending = manager.connections.filter {
+            manager.autoMountUUIDs.contains($0.id) && !$0.isMounted
+        }
 
-        logger.debug("Login auto-mount: \(pending.count) target(s), budget \(Int(retryBudget))s")
+        logger.debug("Login auto-mount: \(pending.count) target(s) of \(manager.autoMountUUIDs.count) saved, budget \(Int(retryBudget))s")
 
         let deadline = Date().addingTimeInterval(retryBudget)
         var round = 0

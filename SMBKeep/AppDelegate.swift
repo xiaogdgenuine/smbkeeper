@@ -52,6 +52,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// 登录项启动会以 `kAEOpenApplication` Apple Event 到达，
     /// 其属性数据为 `keyAELaunchedAsLogInItem`。
     private static func detectLoginItemLaunch() -> Bool {
+//        return true
         guard let event = NSAppleEventManager.shared().currentAppleEvent else { return false }
         return event.eventID == kAEOpenApplication
             && event.paramDescriptor(forKeyword: keyAEPropData)?.enumCodeValue == keyAELaunchedAsLogInItem

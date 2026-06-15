@@ -60,6 +60,7 @@ class SMBConnectionManager: ObservableObject {
         loadConnections()
         loadActiveMounts()
         loadAutoMount()
+        pruneOrphanedMountState()
         reconcileMountStateWithSystem()
         startMountStateMonitoring()
     }
@@ -142,10 +143,34 @@ class SMBConnectionManager: ObservableObject {
     func deleteConnection(_ id: UUID) {
         KeychainHelper.deletePassword(forConnectionID: id)
         connections.removeAll { $0.id == id }
+        // 同步清理挂载状态，避免已删除的服务器残留在 active_mounts.json / auto_mount.json 中。
+        if activeVolumeUUIDs.remove(id) != nil {
+            saveActiveMounts()
+        }
         if autoMountUUIDs.remove(id) != nil {
             saveAutoMount()
         }
         saveConnections()
+    }
+
+    /// 清理 `activeVolumeUUIDs` 与 `autoMountUUIDs` 中已不存在于连接列表的“孤儿” UUID。
+    /// 作为兜底：历史遗留数据或异常路径可能留下已删除服务器的条目。
+    func pruneOrphanedMountState() {
+        let validIDs = Set(connections.map { $0.id })
+
+        let activeBefore = activeVolumeUUIDs.count
+        activeVolumeUUIDs.formIntersection(validIDs)
+        if activeVolumeUUIDs.count != activeBefore {
+            saveActiveMounts()
+            logger.debug("Pruned \(activeBefore - self.activeVolumeUUIDs.count) orphan active mount(s)")
+        }
+
+        let autoBefore = autoMountUUIDs.count
+        autoMountUUIDs.formIntersection(validIDs)
+        if autoMountUUIDs.count != autoBefore {
+            saveAutoMount()
+            logger.debug("Pruned \(autoBefore - self.autoMountUUIDs.count) orphan auto-mount(s)")
+        }
     }
 
     // MARK: - 活跃挂载

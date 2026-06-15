@@ -91,7 +91,13 @@ struct ConnectionEditView: View {
                     }
                     .font(.callout)
                     TextField("smb://", text: $connectionPath)
-                        .help("格式：服务器/共享名，例如 192.168.1.4/6T。共享名后的子目录路径仅用于生成显示名称")
+                        .help("格式：服务器/共享名，例如 192.168.1.4/share。共享名后的子目录路径仅用于生成显示名称")
+                    HStack {
+                        Spacer()
+                        Text("示例：192.168.1.4/share")
+                            .font(.caption)
+                            .foregroundStyle(.gray)
+                    }
                 }
 
                 Section("认证信息（可选）") {

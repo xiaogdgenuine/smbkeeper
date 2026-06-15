@@ -5,6 +5,7 @@
 带挂载/卸载控制的 SMB 连接主列表视图。
 */
 
+import AppKit
 import SwiftUI
 
 struct ConnectionListView: View {
@@ -18,7 +19,11 @@ struct ConnectionListView: View {
         NavigationSplitView {
             listContent
                 .navigationTitle("SMB Keeper")
+                .navigationSplitViewColumnWidth(min: 240, ideal: 300, max: 420)
                 .toolbar { toolbarContent }
+                .safeAreaInset(edge: .bottom) {
+                    sidebarFooter
+                }
         } detail: {
             detailContent
         }
@@ -33,45 +38,115 @@ struct ConnectionListView: View {
     // MARK: - 列表
 
     private var listContent: some View {
-        List(selection: $selectedConnectionID) {
-            ForEach(connectionManager.connections) { conn in
-                ConnectionRow(connection: conn)
-                    .tag(conn.id as UUID?)
-            }
-            .onDelete { indexSet in
-                for index in indexSet {
-                    let conn = connectionManager.connections[index]
-                    if !conn.isMounted {
-                        connectionManager.deleteConnection(conn.id)
+        Group {
+            if connectionManager.connections.isEmpty {
+                emptyListPlaceholder
+            } else {
+                List(selection: $selectedConnectionID) {
+                    ForEach(connectionManager.connections) { conn in
+                        ConnectionRow(connection: conn)
+                            .tag(conn.id as UUID?)
+                    }
+                    .onDelete { indexSet in
+                        for index in indexSet {
+                            let conn = connectionManager.connections[index]
+                            if !conn.isMounted {
+                                connectionManager.deleteConnection(conn.id)
+                            }
+                        }
                     }
                 }
             }
         }
     }
 
+    /// 没有任何连接时显示的引导视图，提供醒目的「添加服务器」入口。
+    private var emptyListPlaceholder: some View {
+        VStack(spacing: 16) {
+            Image(systemName: "externaldrive.badge.plus")
+                .font(.system(size: 44))
+                .foregroundStyle(.secondary)
+            Text("还没有 SMB 服务器")
+                .font(.headline)
+            Text("添加一个服务器即可开始挂载共享文件夹。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+            Button(action: { showingAddSheet = true }) {
+                Label("添加服务器", systemImage: "plus")
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.large)
+        }
+        .padding(32)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    // MARK: - 侧边栏底部常驻区
+
+    /// 把「添加服务器」与「开机自动挂载」放到侧边栏底部，常驻可见，避免藏在菜单里。
+    private var sidebarFooter: some View {
+        VStack(spacing: 0) {
+            Divider()
+            VStack(alignment: .leading, spacing: 10) {
+                Button(action: { showingAddSheet = true }) {
+                    Label("添加服务器", systemImage: "plus")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+                .help("添加一个新的 SMB 服务器连接")
+
+                Toggle(isOn: Binding(
+                    get: { loginItemManager.isEnabled },
+                    set: { loginItemManager.setEnabled($0) }
+                )) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("开机自动挂载")
+                        Text("登录时在后台自动挂载上次已挂载的连接")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .toggleStyle(.switch)
+                .help("登录时在后台自动挂载上次已挂载的连接。密码保存在钥匙串中，不会写入任何启动脚本。")
+
+                if let error = loginItemManager.lastError {
+                    Text("登录项设置失败：\(error)")
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+        }
+        .background(.bar)
+    }
+
     // MARK: - 工具栏
 
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
-        ToolbarItem(placement: .automatic) {
-            Menu {
-                Toggle("开机自动挂载", isOn: Binding(
-                    get: { loginItemManager.isEnabled },
-                    set: { loginItemManager.setEnabled($0) }
-                ))
-                if let error = loginItemManager.lastError {
-                    Divider()
-                    Text("登录项设置失败：\(error)")
-                }
-            } label: {
-                Label("设置", systemImage: "gearshape")
-            }
-            .help("登录时在后台自动挂载上次已挂载的连接。密码保存在钥匙串中，不会写入任何启动脚本。")
-        }
         ToolbarItem(placement: .primaryAction) {
-            Button(action: { showingAddSheet = true }) {
-                Label("添加", systemImage: "plus")
+            Button(action: revealDebugFolder) {
+                Label("调试信息", systemImage: "ladybug")
             }
+            .help("在「访达」中打开包含 active_mounts.json 与 auto_mount.json 的文件夹")
+        }
+    }
+
+    /// 在「访达」中打开并选中存放挂载状态 JSON 的文件夹，便于排查自动挂载问题。
+    private func revealDebugFolder() {
+        guard let folder = connectionManager.sharedContainerURL else { return }
+        let targets = [connectionManager.activeMountsFileURL, connectionManager.autoMountFileURL]
+            .compactMap { $0 }
+            .filter { FileManager.default.fileExists(atPath: $0.path) }
+
+        if targets.isEmpty {
+            NSWorkspace.shared.open(folder)
+        } else {
+            NSWorkspace.shared.activateFileViewerSelecting(targets)
         }
     }
 

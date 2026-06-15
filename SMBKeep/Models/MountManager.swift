@@ -29,6 +29,15 @@ class MountManager: ObservableObject {
         self.manager = manager
     }
 
+    /// 按用户在应用内选择的语言本地化文案。
+    /// 模型层不像 SwiftUI 那样能读取 `\.locale` 环境值，且 `String(localized:)` 默认用启动时固定的 `.current`，
+    /// 因此这里显式传入所选语言对应的 `bundle` 与 `locale`，确保报错文案随应用内切换即时更新。
+    private func localized(_ value: String.LocalizationValue) -> String {
+        String(localized: value,
+               bundle: LocalizationManager.shared.bundle,
+               locale: LocalizationManager.shared.locale)
+    }
+
     private func mountPoint(for connection: SMBConnection) -> URL {
         let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
         let bundleID = Bundle.main.bundleIdentifier ?? "com.example.smbkeep"
@@ -47,7 +56,7 @@ class MountManager: ObservableObject {
         fskitRestartCommand = nil
 
         guard let sourceDir = manager.writeMountConfig(for: connection.id) else {
-            lastError = "无法写入挂载配置"
+            lastError = localized("无法写入挂载配置")
             isBusy = false
             return false
         }
@@ -55,7 +64,7 @@ class MountManager: ObservableObject {
         // 从主 App 的 bundle 中获取扩展的 bundle identifier。
         guard let extBundleID = Bundle.main.object(forInfoDictionaryKey: "EXTENSION_BUNDLE_ID") as? String
                 ?? guessExtensionBundleID() else {
-            lastError = "无法确定扩展的 Bundle ID"
+            lastError = localized("无法确定扩展的 Bundle ID")
             isBusy = false
             return false
         }
@@ -95,7 +104,7 @@ class MountManager: ObservableObject {
         let mountPoint = mountPoint(for: connection).path
 
         guard await isMountPointMounted(mountPoint) else {
-            mountOutput += "挂载点已经不在 mount 表中，按已卸载处理\n"
+            mountOutput += localized("挂载点已经不在 mount 表中，按已卸载处理\n")
             manager.markUnmounted(connection.id)
             manager.clearMountConfig(for: connection.id)
             isBusy = false
@@ -225,22 +234,9 @@ class MountManager: ObservableObject {
             // 仅在挂载失败疑似由 FSKit 守护进程陈旧状态引起时，提示用户自行在终端重启。
             if mountOutputIndicatesStaleFSKitState() {
                 fskitRestartCommand = Self.fskitRestartCommand
-                lastError = """
-                    挂载失败，疑似 FSKit 守护进程状态陈旧。
-
-                    请在「终端」中执行下方命令重启 fskitd，然后重新挂载（多数情况下并不需要这一步）：
-                    \(Self.fskitRestartCommand)
-
-                    扩展 Bundle ID: \(extBundleID)
-                    """
+                lastError = localized("挂载失败，疑似 FSKit 守护进程状态陈旧。\n\n请在「终端」中执行下方命令重启 fskitd，然后重新挂载（多数情况下并不需要这一步）：\n\(Self.fskitRestartCommand)\n\n扩展 Bundle ID: \(extBundleID)")
             } else {
-                lastError = """
-                    所有自动挂载方法均失败。
-
-                    请确保系统扩展已被批准：打开「系统设置 → 通用 → 登陆项与扩展 → 扩展 → 按类别 → 文件系统扩展 → ⓘ → 启用 SMBKeep File System」
-
-                    扩展 Bundle ID: \(extBundleID)
-                    """
+                lastError = localized("所有自动挂载方法均失败。\n\n请确保系统扩展已被批准：打开「系统设置 → 通用 → 登陆项与扩展 → 扩展 → 按类别 → 文件系统扩展 → ⓘ → 启用 SMBKeep File System」\n\n扩展 Bundle ID: \(extBundleID)")
             }
             return false
         }
@@ -270,7 +266,7 @@ class MountManager: ObservableObject {
             if lower.contains("not currently mounted") || lower.contains("no such file")
                 || lower.contains("not mounted") {
                 if !(await isMountPointMounted(mountPoint)) {
-                    mountOutput += "挂载点已经卸载，忽略卸载命令错误\n"
+                    mountOutput += localized("挂载点已经卸载，忽略卸载命令错误\n")
                     return true
                 }
             }
@@ -284,11 +280,11 @@ class MountManager: ObservableObject {
 
         // 检查它是否已经不在挂载状态
         if !(await isMountPointMounted(mountPoint)) {
-            mountOutput += "卷宗似乎已经卸载\n"
+            mountOutput += localized("卷宗似乎已经卸载\n")
             return true
         }
 
-        lastError = "卸载失败，请尝试: diskutil unmount force \"\(mountPoint)\""
+        lastError = localized("卸载失败，请尝试: diskutil unmount force \"\(mountPoint)\"")
         return false
     }
 

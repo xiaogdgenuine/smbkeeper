@@ -12,6 +12,7 @@ struct ConnectionListView: View {
     @EnvironmentObject var connectionManager: SMBConnectionManager
     @EnvironmentObject var mountManager: MountManager
     @EnvironmentObject var loginItemManager: LoginItemManager
+    @EnvironmentObject var localizationManager: LocalizationManager
     @State private var showingAddSheet = false
     @State private var selectedConnectionID: UUID?
 
@@ -20,7 +21,6 @@ struct ConnectionListView: View {
             listContent
                 .navigationTitle("SMB Keeper")
                 .navigationSplitViewColumnWidth(min: 240, ideal: 300, max: 420)
-                .toolbar { toolbarContent }
                 .safeAreaInset(edge: .bottom) {
                     sidebarFooter
                 }
@@ -32,6 +32,9 @@ struct ConnectionListView: View {
                                existingConnections: connectionManager.connections) { newConn in
                 connectionManager.addConnection(newConn)
             }
+            // sheet 是独立的弹出宿主，不会继承根视图设置的 \.locale 覆盖，
+            // 需在此重新注入所选语言，否则会回退到系统语言。
+            .environment(\.locale, localizationManager.locale)
         }
     }
 
@@ -117,37 +120,30 @@ struct ConnectionListView: View {
                         .foregroundStyle(.red)
                         .fixedSize(horizontal: false, vertical: true)
                 }
+
+                Divider()
+
+                HStack(spacing: 6) {
+                    Image(systemName: "globe")
+                        .foregroundStyle(.secondary)
+                    Picker("语言", selection: $localizationManager.language) {
+                        ForEach(AppLanguage.allCases) { language in
+                            if let native = language.nativeName {
+                                Text(verbatim: native).tag(language)
+                            } else {
+                                Text("跟随系统").tag(language)
+                            }
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                    .help("切换 App 界面语言")
+                }
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 10)
         }
         .background(.bar)
-    }
-
-    // MARK: - 工具栏
-
-    @ToolbarContentBuilder
-    private var toolbarContent: some ToolbarContent {
-        ToolbarItem(placement: .primaryAction) {
-            Button(action: revealDebugFolder) {
-                Label("调试信息", systemImage: "ladybug")
-            }
-            .help("在「访达」中打开包含 active_mounts.json 与 auto_mount.json 的文件夹")
-        }
-    }
-
-    /// 在「访达」中打开并选中存放挂载状态 JSON 的文件夹，便于排查自动挂载问题。
-    private func revealDebugFolder() {
-        guard let folder = connectionManager.sharedContainerURL else { return }
-        let targets = [connectionManager.activeMountsFileURL, connectionManager.autoMountFileURL]
-            .compactMap { $0 }
-            .filter { FileManager.default.fileExists(atPath: $0.path) }
-
-        if targets.isEmpty {
-            NSWorkspace.shared.open(folder)
-        } else {
-            NSWorkspace.shared.activateFileViewerSelecting(targets)
-        }
     }
 
     // MARK: - 详情
@@ -218,6 +214,7 @@ struct ConnectionRow: View {
 struct ConnectionDetailView: View {
     @EnvironmentObject var connectionManager: SMBConnectionManager
     @EnvironmentObject var mountManager: MountManager
+    @EnvironmentObject var localizationManager: LocalizationManager
     let connection: SMBConnection
     @State private var showingEditSheet = false
     @State private var showingDeleteConfirmation = false
@@ -250,6 +247,8 @@ struct ConnectionDetailView: View {
                     }
                 }
             }
+            // sheet 不会继承根视图的 \.locale 覆盖，需在此重新注入所选语言。
+            .environment(\.locale, localizationManager.locale)
         }
         .confirmationDialog("删除连接", isPresented: $showingDeleteConfirmation) {
             Button("删除", role: .destructive) {
@@ -383,6 +382,21 @@ struct ConnectionDetailView: View {
                 } label: {
                     Label("连接详情", systemImage: "info.circle")
                 }
+
+                GroupBox {
+                    HStack(alignment: .top, spacing: 10) {
+                        Image(systemName: "checkmark.seal")
+                            .foregroundStyle(.green)
+                        Text("挂载完成后可以放心退出 App：已挂载的卷宗由系统的文件系统扩展维持，关闭本 App 不会卸载它们。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.vertical, 4)
+                } label: {
+                    Label("提示", systemImage: "info.circle")
+                }
             }
             .padding()
         }
@@ -422,7 +436,7 @@ struct FSKitRestartHint: View {
                 Button {
                     copyCommand()
                 } label: {
-                    Label(copied ? "已复制" : "复制",
+                    Label(copied ? LocalizedStringKey("已复制") : LocalizedStringKey("复制"),
                           systemImage: copied ? "checkmark" : "doc.on.doc")
                 }
                 .buttonStyle(.borderedProminent)
@@ -455,7 +469,7 @@ struct StatusBadge: View {
             Circle()
                 .fill(isMounted ? Color.green : Color.gray)
                 .frame(width: 8, height: 8)
-            Text(isMounted ? "已挂载" : "未挂载")
+            Text(isMounted ? LocalizedStringKey("已挂载") : LocalizedStringKey("未挂载"))
                 .font(.caption)
         }
         .padding(.horizontal, 8)
@@ -468,12 +482,12 @@ struct StatusBadge: View {
 }
 
 struct DetailRow: View {
-    let label: String
+    let label: LocalizedStringKey
     let value: String
 
     var body: some View {
         HStack(alignment: .top) {
-            Text(label + ":")
+            (Text(label) + Text(verbatim: ":"))
                 .foregroundStyle(.secondary)
                 .frame(width: 70, alignment: .trailing)
             Text(value)

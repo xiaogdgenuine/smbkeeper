@@ -232,11 +232,12 @@
 				};
 			};
 			buildConfigurationList = D3BA95692D9D74FC00FAF4A2 /* Build configuration list for PBXProject "SMBKeep" */;
-			developmentRegion = en;
+			developmentRegion = "zh-Hans";
 			hasScannedForEncodings = 0;
 			knownRegions = (
 				en,
 				Base,
+				"zh-Hans",
 			);
 			mainGroup = D3BA95652D9D74FC00FAF4A2;
 			packageReferences = (

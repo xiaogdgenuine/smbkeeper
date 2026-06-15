@@ -14,6 +14,7 @@ struct SMBKeepApp: App {
     @StateObject private var connectionManager: SMBConnectionManager
     @StateObject private var mountManager: MountManager
     @StateObject private var loginItemManager = LoginItemManager()
+    @StateObject private var localizationManager = LocalizationManager.shared
 
     init() {
         let cm = SMBConnectionManager()
@@ -27,6 +28,8 @@ struct SMBKeepApp: App {
                 .environmentObject(connectionManager)
                 .environmentObject(mountManager)
                 .environmentObject(loginItemManager)
+                .environmentObject(localizationManager)
+                .environment(\.locale, localizationManager.locale)
         }
     }
 }

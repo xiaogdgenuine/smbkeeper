@@ -106,13 +106,13 @@ struct ConnectionEditView: View {
                 }
             }
             .formStyle(.grouped)
-            .navigationTitle(isEditing ? "编辑连接" : "新建连接")
+            .navigationTitle(isEditing ? LocalizedStringKey("编辑连接") : LocalizedStringKey("新建连接"))
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("取消") { dismiss() }
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button(isEditing ? "保存" : "添加") {
+                    Button(isEditing ? LocalizedStringKey("保存") : LocalizedStringKey("添加")) {
                         save()
                     }
                     .disabled(!isValid)

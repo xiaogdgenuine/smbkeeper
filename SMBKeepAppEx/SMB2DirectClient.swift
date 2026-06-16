@@ -23,6 +23,11 @@ import Semaphore
 
 /// 作为每个请求的 `cb_data` 交给 libsmb2 的令牌。C 完成回调会把它还原成 Swift 对象，
 /// 并路由到所属的 client。
+///
+/// token 的强引用由 client 的 `tokens` 字典按 id 持有（不再用 `passRetained` 把生命周期
+/// 绑在 libsmb2 的回调上）。交给 libsmb2 的只是一个 `passUnretained` 指针，回调里用
+/// `takeUnretainedValue()` 只读取、不释放。释放只由 client 这边唯一负责，从而对
+/// “销毁期回调 / 提交回滚 / 超时”等多路径免疫，避免对同一 token 过度释放（曾导致 SIGSEGV）。
 private final class SMB2RequestToken {
     let id: UInt64
     unowned let client: SMB2DirectClient
@@ -40,7 +45,9 @@ private func smb2RequestCompletion(_ smb2: UnsafeMutablePointer<smb2_context>?,
                                    _ commandData: UnsafeMutableRawPointer?,
                                    _ cbData: UnsafeMutableRawPointer?) {
     guard let cbData else { return }
-    let token = Unmanaged<SMB2RequestToken>.fromOpaque(cbData).takeRetainedValue()
+    // 只读取、不释放：token 由 client 的 `tokens` 字典持有，libsmb2 总是「调一次 cb 紧接着
+    // free pdu」，因此这里拿到的指针始终有效；释放交给 client 在完成/回滚/teardown 时唯一处理。
+    let token = Unmanaged<SMB2RequestToken>.fromOpaque(cbData).takeUnretainedValue()
     token.client.completeRequest(id: token.id, status: status, commandData: commandData)
 }
 
@@ -62,6 +69,10 @@ final class SMB2DirectClient: @unchecked Sendable {
     }
     private var nextID: UInt64 = 1
     private var pending: [UInt64: PendingRequest] = [:]
+
+    /// 在途请求的 token 强引用表（只在 `loop` 上访问），与 `pending` 同生命周期。
+    /// 交给 libsmb2 的 `cb_data` 是这里 token 的非持有指针，因此只要条目还在，指针就有效。
+    private var tokens: [UInt64: SMB2RequestToken] = [:]
 
     /// 以 SMB 路径为键的已打开文件句柄，在多次 read/write 调用间复用。
     private struct CachedHandle {
@@ -96,11 +107,22 @@ final class SMB2DirectClient: @unchecked Sendable {
     // 单飞（single-flight）重连：用信号量保证同一时刻只有一个重连在跑。
     private let reconnectSemaphore = AsyncSemaphore(value: 1)
 
-    // 重连熔断（只在 `loop` 上访问）：连续失败到上限后暂停重连，直到网络发生变化才恢复。
-    // 用户可能带着电脑离开了网络，这时一直反复重连只会白白耗电、毫无意义。
+    // 重连熔断（只在 `loop` 上访问）：连续失败到上限后暂停由文件操作驱动的“懒重连”，
+    // 避免用户已离开网络时还反复重连白白耗电。熔断后改由退避自愈探针（见下）按递增延迟
+    // 自动尝试恢复。熔断也会被外部事件立即解除并复位退避：网络变化/唤醒
+    //（`handleNetworkChange`）、用户主动浏览目录（`resumeReconnects`）。
     private var consecutiveReconnectFailures = 0
     private var reconnectSuspended = false
     private static let maxReconnectFailures = 5
+
+    // 退避自愈探针（退火/backoff，只在 `loop` 上访问）：熔断后不再永久挂起，而是按
+    // `reconnectBackoffSchedule` 的递增延迟一次性地自动探测重连——失败就用下一档更长的延迟
+    // 继续，成功或被外部事件复位后归零。延迟到顶后保持最后一档。
+    // 节奏是指数退避封顶 5 分钟：前几档密集，覆盖常见的短暂中断（路由重启、唤醒、网线松动）；
+    // 长时间连不上时拉长间隔省电。
+    private var reconnectProbeTimer: DispatchSourceTimer?
+    private var reconnectProbeAttempt = 0
+    private static let reconnectBackoffSchedule: [TimeInterval] = [5, 15, 30, 60, 120, 300]
 
     // 刚建连接的复用窗口（只在 `loop` 上访问）：记录最近一次连接成功的时刻。
     // 网络恢复瞬间常有一批针对“旧连接”的失败几乎同时涌进来，它们都会调用 reconnect()；
@@ -128,6 +150,7 @@ final class SMB2DirectClient: @unchecked Sendable {
         // 到 deinit 执行时，已没有外部引用，也没有 loop 上的 block/handler 持有 `self`
         //（事件源/定时器都用 `[weak self]`），因此该 context 的事件循环已空闲。
         // 直接销毁即可；这里若用 `loop.sync`，万一最后一次释放发生在 `loop` 上会死锁。
+        cancelReconnectProbe()
         teardownContext()
     }
 
@@ -156,7 +179,7 @@ final class SMB2DirectClient: @unchecked Sendable {
 
                 let id = self.nextID
                 self.nextID &+= 1
-                let raw = Unmanaged.passRetained(SMB2RequestToken(id: id, client: self)).toOpaque()
+                let raw = self.makeRequestToken(id: id)
                 self.pending[id] = PendingRequest(
                     complete: { status, _ in
                         self.cancelConnectDeadline()
@@ -191,7 +214,7 @@ final class SMB2DirectClient: @unchecked Sendable {
                 if self.pending[id] != nil {
                     if rc < 0 {
                         self.pending.removeValue(forKey: id)
-                        Unmanaged<SMB2RequestToken>.fromOpaque(raw).release()
+                        self.tokens.removeValue(forKey: id)
                         let err = SMB2LibSupport.posixError(fromContext: ctx, code: rc)
                         self.logger.error("libsmb2 connect submit failed: \(err)")
                         self.teardownContext()
@@ -212,6 +235,7 @@ final class SMB2DirectClient: @unchecked Sendable {
     func disconnect() {
         loop.async {
             self.logger.debug("libsmb2 disconnecting from \(self.config.shareName)")
+            self.cancelReconnectProbe()
             self.teardownContext()
         }
     }
@@ -242,7 +266,8 @@ final class SMB2DirectClient: @unchecked Sendable {
         }
 
         // 熔断：连续失败到上限、且期间网络没有任何变化，就不再重试，直接放弃。
-        // 等到 `handleNetworkChange()`（网络变化/唤醒）时再解除熔断恢复重试。
+        // 等到 `handleNetworkChange()`（网络变化/唤醒）或 `resumeReconnects()`（用户浏览目录）
+        // 时再解除熔断恢复重试。
         if await awaitOnLoop({ self.reconnectSuspended }) {
             return false
         }
@@ -251,15 +276,33 @@ final class SMB2DirectClient: @unchecked Sendable {
         await awaitOnLoop {
             if ok {
                 self.consecutiveReconnectFailures = 0
+                self.reconnectProbeAttempt = 0
+                self.cancelReconnectProbe()
             } else {
                 self.consecutiveReconnectFailures += 1
                 if self.consecutiveReconnectFailures >= Self.maxReconnectFailures {
                     self.reconnectSuspended = true
-                    self.logger.error("libsmb2 reconnect suspended after \(self.consecutiveReconnectFailures) consecutive failures; will resume on network change")
+                    // 熔断：停止懒重连，改由退避探针按递增延迟自动尝试恢复。
+                    self.scheduleReconnectProbe()
                 }
             }
         }
         return ok
+    }
+
+    /// 解除重连熔断并清零失败计数。当用户主动浏览目录（`enumerateDirectory`）时调用：
+    /// 这说明用户正等着这个卷出内容，即使之前因连续失败而熔断，也值得立刻重新开始尝试。
+    /// 仅复位状态；真正的重连仍由随后的文件操作经 `reconnect()` 单飞触发。
+    func resumeReconnects() {
+        loop.async {
+            guard self.reconnectSuspended || self.consecutiveReconnectFailures != 0
+                    || self.reconnectProbeTimer != nil else { return }
+            self.logger.debug("libsmb2 resuming reconnects due to directory browse")
+            self.reconnectSuspended = false
+            self.consecutiveReconnectFailures = 0
+            self.reconnectProbeAttempt = 0
+            self.cancelReconnectProbe()
+        }
     }
 
     private func performReconnect() async -> Bool {
@@ -308,10 +351,26 @@ final class SMB2DirectClient: @unchecked Sendable {
 
     private func installSources(fd: Int32) {
         disposeSources()
-        let read = DispatchSource.makeReadSource(fileDescriptor: fd, queue: loop)
+        // 关键：dispatch source 监控的是我们自己 dup 出来的 fd 副本，而不是 libsmb2 拥有的原 fd。
+        // libsmb2 会在 `smb2_destroy_context` 里**同步** close 它自己的 fd，而 DispatchSource 的
+        // `cancel()` 是**异步**的——若直接监控原 fd，就会出现“fd 在 source 的 cancel handler 执行
+        // 之前就 vanished”，触发 libdispatch BUG，并让后续 `smb2_service` 在错乱的 socket 状态上
+        // 运行、损坏 libsmb2 内部结构（曾导致 getinfo_cb_2 解引用被复用的 stat_data 而崩溃）。
+        // 用 dup 的副本 + 在 cancel handler 里 close，使两边的 fd 生命周期彻底解耦。
+        let readFD = dup(fd)
+        let writeFD = dup(fd)
+        guard readFD >= 0, writeFD >= 0 else {
+            if readFD >= 0 { close(readFD) }
+            if writeFD >= 0 { close(writeFD) }
+            self.logger.error("libsmb2 dup(fd) failed (errno \(errno)); cannot install event sources")
+            return
+        }
+        let read = DispatchSource.makeReadSource(fileDescriptor: readFD, queue: loop)
         read.setEventHandler { [weak self] in self?.service(Int32(POLLIN)) }
-        let write = DispatchSource.makeWriteSource(fileDescriptor: fd, queue: loop)
+        read.setCancelHandler { close(readFD) }
+        let write = DispatchSource.makeWriteSource(fileDescriptor: writeFD, queue: loop)
         write.setEventHandler { [weak self] in self?.service(Int32(POLLOUT)) }
+        write.setCancelHandler { close(writeFD) }
         self.readSource = read
         self.writeSource = write
         self.writeSuspended = true
@@ -332,13 +391,14 @@ final class SMB2DirectClient: @unchecked Sendable {
     }
 
     private func disposeSources() {
+        // 每个 source 的 cancel handler 负责 close 它自己 dup 出来的 fd 副本，所以这里只需 cancel。
         if let read = readSource {
             read.setEventHandler {}
             read.cancel()
             readSource = nil
         }
         if let write = writeSource {
-            // 处于挂起状态的 source 必须先 resume 才能释放。
+            // 处于挂起状态的 source 必须先 resume，cancel 才能完成并触发 cancel handler（关闭 dup fd）。
             if writeSuspended { write.resume(); writeSuspended = false }
             write.setEventHandler {}
             write.cancel()
@@ -396,6 +456,38 @@ final class SMB2DirectClient: @unchecked Sendable {
         connectDeadlineTimer = nil
     }
 
+    /// 安排一次退避自愈探针。熔断后调用：按 `reconnectBackoffSchedule` 的递增延迟，在 `loop`
+    /// 上一次性触发一次重连；失败会自然回到 `reconnect()` 的熔断分支、用下一档更长的延迟再排。
+    /// 必须在 `loop` 上运行。
+    private func scheduleReconnectProbe() {
+        let idx = min(reconnectProbeAttempt, Self.reconnectBackoffSchedule.count - 1)
+        let delay = Self.reconnectBackoffSchedule[idx]
+        reconnectProbeAttempt += 1
+        let timer = DispatchSource.makeTimerSource(queue: loop)
+        timer.schedule(deadline: .now() + delay)
+        timer.setEventHandler { [weak self] in self?.fireReconnectProbe() }
+        reconnectProbeTimer?.cancel()
+        reconnectProbeTimer = timer
+        logger.error("libsmb2 reconnect suspended after \(consecutiveReconnectFailures) failures; self-heal probe in \(delay)s")
+        timer.resume()
+    }
+
+    /// 退避探针到点：解除熔断并发起一次重连。若重连再次失败到上限，会经 `scheduleReconnectProbe`
+    /// 用下一档（更长）的延迟继续。运行在 `loop` 上。
+    private func fireReconnectProbe() {
+        reconnectProbeTimer = nil
+        // 期间可能已被网络变化/用户浏览解除熔断（并复位）；那种情况无需探针再插一脚。
+        guard reconnectSuspended else { return }
+        logger.debug("libsmb2 self-heal probe firing; attempting reconnect")
+        reconnectSuspended = false
+        Task { [weak self] in await self?.reconnect() }
+    }
+
+    private func cancelReconnectProbe() {
+        reconnectProbeTimer?.cancel()
+        reconnectProbeTimer = nil
+    }
+
     /// 网络配置发生变化（或系统唤醒）时调用。做两件事：
     /// 1) 解除重连熔断、清零连续失败计数——网络变了，值得重新尝试连接。
     /// 2) 若此刻正有一次 connect 握手在途（`connectDeadlineTimer != nil`），立刻把它拆掉：
@@ -408,6 +500,8 @@ final class SMB2DirectClient: @unchecked Sendable {
             }
             self.reconnectSuspended = false
             self.consecutiveReconnectFailures = 0
+            self.reconnectProbeAttempt = 0
+            self.cancelReconnectProbe()
             if self.connectDeadlineTimer != nil {
                 self.logger.debug("libsmb2 aborting in-flight connect due to network change")
                 self.teardownContext()
@@ -431,7 +525,7 @@ final class SMB2DirectClient: @unchecked Sendable {
         guard let ctx = self.context else { return }
         let id = self.nextID
         self.nextID &+= 1
-        let raw = Unmanaged.passRetained(SMB2RequestToken(id: id, client: self)).toOpaque()
+        let raw = self.makeRequestToken(id: id)
         // echo 仅用于保活；失败不在这里主动重连，留给下一次真实操作懒重连，
         // 避免“销毁旧 context → echo 失败 → 又重连”的循环。
         self.pending[id] = PendingRequest(
@@ -444,7 +538,7 @@ final class SMB2DirectClient: @unchecked Sendable {
         if self.pending[id] != nil {
             if rc < 0 {
                 self.pending.removeValue(forKey: id)
-                Unmanaged<SMB2RequestToken>.fromOpaque(raw).release()
+                self.tokens.removeValue(forKey: id)
             } else {
                 updateEventSources()
             }
@@ -463,10 +557,14 @@ final class SMB2DirectClient: @unchecked Sendable {
             let requests = self.pending
             self.pending.removeAll(keepingCapacity: true)
             self.context = nil
+            // 销毁会对在途 PDU回调（走到 completeRequest，但此时 pending 已空、为 no-op）；
+            // 此刻 tokens 仍存活，回调里的 takeUnretainedValue 因此安全。
             smb2_destroy_context(ctx)
             for (_, request) in requests {
                 request.failAfterContextDestroyed()
             }
+            // 销毁已返回，libsmb2 不会再回调任何 cb_data，此时统一释放所有 token。
+            self.tokens.removeAll(keepingCapacity: true)
         }
         // 这些 fh 结构由（现已销毁的）context 拥有；直接丢弃引用即可。
         handles.removeAll()
@@ -483,8 +581,20 @@ final class SMB2DirectClient: @unchecked Sendable {
     // MARK: - 请求完成汇集点（运行在 `loop` 上）
 
     fileprivate func completeRequest(id: UInt64, status: Int32, commandData: UnsafeMutableRawPointer?) {
+        // 释放 token（唯一释放点之一）。按 id 查 pending 做幂等：若该请求已被处理（如销毁期
+        // 已走过 fail 路径），这里直接返回，绝不重复 resume continuation 或重复释放。
+        tokens.removeValue(forKey: id)
         guard let request = pending.removeValue(forKey: id) else { return }
         request.complete(status, commandData)
+    }
+
+    /// 创建并登记一个请求 token，返回交给 libsmb2 的非持有 `cb_data` 指针。
+    /// token 由 `tokens[id]` 强持有；正常完成时由 `completeRequest` 释放，提交失败回滚时由调用方
+    /// 同步移除 `pending`/`tokens` 条目，断线时由 `teardownContext` 统一清理。必须在 `loop` 上调用。
+    private func makeRequestToken(id: UInt64) -> UnsafeMutableRawPointer {
+        let token = SMB2RequestToken(id: id, client: self)
+        tokens[id] = token
+        return Unmanaged.passUnretained(token).toOpaque()
     }
 
     // MARK: - 通用 submit
@@ -507,7 +617,7 @@ final class SMB2DirectClient: @unchecked Sendable {
                 }
                 let id = self.nextID
                 self.nextID &+= 1
-                let raw = Unmanaged.passRetained(SMB2RequestToken(id: id, client: self)).toOpaque()
+                let raw = self.makeRequestToken(id: id)
                 self.pending[id] = PendingRequest(
                     complete: { status, commandData in
                         let result = interpret(status, commandData, ctx)
@@ -525,7 +635,7 @@ final class SMB2DirectClient: @unchecked Sendable {
                 if self.pending[id] != nil {
                     if rc < 0 {
                         self.pending.removeValue(forKey: id)
-                        Unmanaged<SMB2RequestToken>.fromOpaque(raw).release()
+                        self.tokens.removeValue(forKey: id)
                         cleanup?()
                         cont.resume(throwing: SMB2LibSupport.posixError(fromContext: ctx, code: rc))
                     } else {
@@ -581,7 +691,7 @@ final class SMB2DirectClient: @unchecked Sendable {
 
         let id = self.nextID
         self.nextID &+= 1
-        let raw = Unmanaged.passRetained(SMB2RequestToken(id: id, client: self)).toOpaque()
+        let raw = self.makeRequestToken(id: id)
         self.pending[id] = PendingRequest(
             complete: { status, commandData in
                 self.finishOpen(path: path, openedWritable: wantWrite, status: status, commandData: commandData)
@@ -594,7 +704,7 @@ final class SMB2DirectClient: @unchecked Sendable {
         if self.pending[id] != nil {
             if rc < 0 {
                 self.pending.removeValue(forKey: id)
-                Unmanaged<SMB2RequestToken>.fromOpaque(raw).release()
+                self.tokens.removeValue(forKey: id)
                 finishOpen(path: path, openedWritable: wantWrite,
                            status: rc, commandData: nil)
             } else {
@@ -652,7 +762,7 @@ final class SMB2DirectClient: @unchecked Sendable {
     private func fireAndForgetClose(ctx: UnsafeMutablePointer<smb2_context>, fh: OpaquePointer) {
         let id = self.nextID
         self.nextID &+= 1
-        let raw = Unmanaged.passRetained(SMB2RequestToken(id: id, client: self)).toOpaque()
+        let raw = self.makeRequestToken(id: id)
         self.pending[id] = PendingRequest(
             complete: { _, _ in },
             failAfterContextDestroyed: {}
@@ -661,7 +771,7 @@ final class SMB2DirectClient: @unchecked Sendable {
         if self.pending[id] != nil {
             if rc < 0 {
                 self.pending.removeValue(forKey: id)
-                Unmanaged<SMB2RequestToken>.fromOpaque(raw).release()
+                self.tokens.removeValue(forKey: id)
             } else {
                 updateEventSources()
             }

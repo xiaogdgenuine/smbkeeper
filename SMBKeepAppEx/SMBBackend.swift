@@ -33,6 +33,11 @@ final class SMBBackend: @unchecked Sendable {
         client.handleNetworkChange()
     }
 
+    /// 用户主动浏览目录时调用：解除可能存在的重连熔断，让随后的操作重新开始尝试重连。
+    func resumeReconnects() {
+        client.resumeReconnects()
+    }
+
     @discardableResult
     func reconnect() async -> Bool {
         await client.reconnect()

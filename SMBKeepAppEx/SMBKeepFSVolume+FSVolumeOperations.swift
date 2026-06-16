@@ -526,6 +526,10 @@ extension SMBKeepFSVolume: FSVolume.Operations {
             return replyHandler(FSDirectoryVerifier(0), fs_errorForPOSIXError(ENOTDIR))
         }
 
+        // 用户正在浏览目录：即便之前因连续失败而熔断，也立刻解除熔断，
+        // 让下面的操作（必要时经 recoverFromConnectionLoss）重新开始尝试重连。
+        self.smb.resumeReconnects()
+
         Task {
             var recoveredOnce = false
             while true {

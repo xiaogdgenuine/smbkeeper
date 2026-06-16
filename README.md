@@ -50,11 +50,11 @@ The clips below demonstrate the full flow of "play a video → close the lid to 
 
 Step 1: a video on the network volume is playing, then the lid is closed to put the laptop to sleep:
 
-<video src="resources/play_then_goto_sleep.mp4" controls width="640"></video>
+[<video src="resources/play_then_goto_sleep.mp4" controls width="640"></video>](https://github.com/user-attachments/assets/c2541852-51b5-4758-8855-a9452ce1d247)
 
 Step 2: after roughly 10 minutes, the lid is opened to wake the machine, and the video resumes playing right away — the connection has already recovered in the background:
 
-<video src="resources/awake_then_continue_play.mp4" controls width="640"></video>
+[<video src="resources/awake_then_continue_play.mp4" controls width="640"></video>](https://github.com/user-attachments/assets/1d261e44-068b-4cfa-a74c-5f06648a521f)
 
 > Note: Finder's built-in SMB implementation cannot resume playback seamlessly after sleep. See: https://github.com/iina/iina/issues/5474
 

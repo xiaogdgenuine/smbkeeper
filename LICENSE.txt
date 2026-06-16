@@ -1,4 +1,6 @@
-Copyright © 2026 Apple Inc.
+MIT License
+
+Copyright © 2026 xiaogd <xiaogdgenuine@gmail.com>
 
 Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
 
@@ -6,3 +8,29 @@ The above copyright notice and this permission notice shall be included in all c
 
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
+================================================================================
+THIRD-PARTY COMPONENTS
+================================================================================
+
+This project incorporates third-party software covered by their own licenses.
+
+1. Apple sample code
+   Portions of this project are derived from Apple's sample project
+   "Building a passthrough file system"
+   (https://developer.apple.com/documentation/fskit/building-a-passthrough-file-system),
+   which is distributed by Apple Inc. under an MIT-style license.
+
+2. libsmb2 (deps/libsmb2)
+   The SMB2 client library in deps/libsmb2 (the "lib" and "include" directories)
+   is licensed under the GNU Lesser General Public License, version 2.1 or
+   (at your option) any later version (LGPL-2.1-or-later). It is statically
+   linked into the SMBKeep file system extension.
+
+   In accordance with the LGPL, the complete corresponding source code for
+   libsmb2 is included in this repository under deps/libsmb2, and you may modify
+   and relink it with this software. See:
+     - deps/libsmb2/COPYING
+     - deps/libsmb2/LICENCE-LGPL-2.1.txt
+   for the full terms.
+
+   libsmb2 is copyright © Ronnie Sahlberg and contributors.

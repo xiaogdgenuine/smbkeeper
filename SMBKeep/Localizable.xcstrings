@@ -202,6 +202,54 @@
         }
       }
     },
+    "留空将根据路径自动生成" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Leave empty to generate from the path"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "留空将根据路径自动生成"
+          }
+        }
+      }
+    },
+    "已存在同名连接，请换一个名称" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "A connection with this name already exists. Please choose another name."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已存在同名连接，请换一个名称"
+          }
+        }
+      }
+    },
+    "自定义此连接在 Finder 中显示的名称。留空将根据路径自动生成；名称不能与其它连接重复。" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Customize the name shown for this connection in Finder. Leave empty to generate one from the path; the name must be unique."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "自定义此连接在 Finder 中显示的名称。留空将根据路径自动生成；名称不能与其它连接重复。"
+          }
+        }
+      }
+    },
     "命令输出" : {
       "localizations" : {
         "en" : {
@@ -298,18 +346,34 @@
         }
       }
     },
-    "所有自动挂载方法均失败。\n\n请确保系统扩展已被批准：打开「系统设置 → 通用 → 登陆项与扩展 → 扩展 → 按类别 → 文件系统扩展 → ⓘ → 启用 SMBKeep File System」\n\n扩展 Bundle ID: %@" : {
+    "所有自动挂载方法均失败。请在系统设置中启用「SMBKeep File System」文件系统扩展后重试。\n\n扩展 Bundle ID: %@" : {
       "localizations" : {
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "All automatic mount methods failed.\n\nMake sure the system extension is approved: open System Settings → General → Login Items & Extensions → Extensions → By Category → File System Extensions → ⓘ → enable “SMBKeep File System.”\n\nExtension Bundle ID: %@"
+            "value" : "All automatic mount methods failed. Enable the “SMBKeep File System” file system extension in System Settings, then try again.\n\nExtension Bundle ID: %@"
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "所有自动挂载方法均失败。\n\n请确保系统扩展已被批准：打开「系统设置 → 通用 → 登陆项与扩展 → 扩展 → 按类别 → 文件系统扩展 → ⓘ → 启用 SMBKeep File System」\n\n扩展 Bundle ID: %@"
+            "value" : "所有自动挂载方法均失败。请在系统设置中启用「SMBKeep File System」文件系统扩展后重试。\n\n扩展 Bundle ID: %@"
+          }
+        }
+      }
+    },
+    "打开系统设置" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Open System Settings"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "打开系统设置"
           }
         }
       }
@@ -410,6 +474,22 @@
         }
       }
     },
+    "挂载需要在「系统设置」中启用「SMBKeep File System」扩展。点按下方按钮前往，打开对应开关后再回到本 App 重新挂载。" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mounting requires enabling the “SMBKeep File System” extension in System Settings. Tap the button below to open it, turn on the switch, then come back and mount again."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "挂载需要在「系统设置」中启用「SMBKeep File System」扩展。点按下方按钮前往，打开对应开关后再回到本 App 重新挂载。"
+          }
+        }
+      }
+    },
     "提示" : {
       "localizations" : {
         "en" : {
@@ -441,6 +521,9 @@
           }
         }
       }
+    },
+    "文件系统扩展未启用，点按查看如何启用" : {
+
     },
     "新建连接" : {
       "localizations" : {
@@ -634,34 +717,34 @@
         }
       }
     },
-    "登录时在后台自动挂载上次已挂载的连接" : {
+    "登录后自动补挂载上次已挂载的连接" : {
       "localizations" : {
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Automatically mount your previously mounted connections in the background when you log in."
+            "value" : "Automatically remount previously mounted connections after login."
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "登录时在后台自动挂载上次已挂载的连接"
+            "value" : "登录后自动补挂载上次已挂载的连接"
           }
         }
       }
     },
-    "登录时在后台自动挂载上次已挂载的连接。密码保存在钥匙串中，不会写入任何启动脚本。" : {
+    "登录项启动时会在后台自动挂载；若 App 被系统恢复或手动打开，也会补挂载尚未挂上的连接。密码保存在钥匙串中，不会写入任何启动脚本。" : {
       "localizations" : {
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Automatically mount your previously mounted connections in the background when you log in. Passwords are stored in the Keychain and are never written to any launch script."
+            "value" : "When launched as a login item, SMBKeep mounts in the background. If the app is restored by the system or opened manually, it also remounts any pending connections. Passwords are stored in the Keychain and are never written to any launch script."
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "登录时在后台自动挂载上次已挂载的连接。密码保存在钥匙串中，不会写入任何启动脚本。"
+            "value" : "登录项启动时会在后台自动挂载；若 App 被系统恢复或手动打开，也会补挂载尚未挂上的连接。密码保存在钥匙串中，不会写入任何启动脚本。"
           }
         }
       }
@@ -870,6 +953,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "错误"
+          }
+        }
+      }
+    },
+    "需要启用文件系统扩展" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Enable the File System Extension"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "需要启用文件系统扩展"
           }
         }
       }

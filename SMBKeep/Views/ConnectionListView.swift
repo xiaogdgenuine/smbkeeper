@@ -15,12 +15,14 @@ struct ConnectionListView: View {
     @EnvironmentObject var localizationManager: LocalizationManager
     @State private var showingAddSheet = false
     @State private var selectedConnectionID: UUID?
+    @State private var showingExtensionPopover = false
 
     var body: some View {
         NavigationSplitView {
             listContent
                 .navigationTitle("SMB Keeper")
                 .navigationSplitViewColumnWidth(min: 240, ideal: 300, max: 420)
+                .toolbar { toolbarContent }
                 .safeAreaInset(edge: .bottom) {
                     sidebarFooter
                 }
@@ -35,6 +37,35 @@ struct ConnectionListView: View {
             // sheet 是独立的弹出宿主，不会继承根视图设置的 \.locale 覆盖，
             // 需在此重新注入所选语言，否则会回退到系统语言。
             .environment(\.locale, localizationManager.locale)
+        }
+        // App 打开即检测扩展是否启用，并在每次回到前台时复查，
+        // 使「未启用」告警能随用户在系统设置中的开关即时更新。
+        .task { await mountManager.refreshExtensionStatus() }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            Task { await mountManager.refreshExtensionStatus() }
+        }
+    }
+
+    // MARK: - 工具栏
+
+    @ToolbarContentBuilder
+    private var toolbarContent: some ToolbarContent {
+        if !mountManager.extensionEnabled {
+            ToolbarItem(placement: .primaryAction) {
+                Button {
+                    showingExtensionPopover = true
+                } label: {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                }
+                .help("文件系统扩展未启用，点按查看如何启用")
+                .popover(isPresented: $showingExtensionPopover, arrowEdge: .bottom) {
+                    ExtensionApprovalHint()
+                        .frame(width: 340)
+                        .padding()
+                        .environment(\.locale, localizationManager.locale)
+                }
+            }
         }
     }
 
@@ -106,13 +137,13 @@ struct ConnectionListView: View {
                 )) {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("开机自动挂载")
-                        Text("登录时在后台自动挂载上次已挂载的连接")
+                        Text("登录后自动补挂载上次已挂载的连接")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
                 }
                 .toggleStyle(.switch)
-                .help("登录时在后台自动挂载上次已挂载的连接。密码保存在钥匙串中，不会写入任何启动脚本。")
+                .help("登录项启动时会在后台自动挂载；若 App 被系统恢复或手动打开，也会补挂载尚未挂上的连接。密码保存在钥匙串中，不会写入任何启动脚本。")
 
                 if let error = loginItemManager.lastError {
                     Text("登录项设置失败：\(error)")
@@ -340,6 +371,10 @@ struct ConnectionDetailView: View {
                     )
                 }
 
+                if !mountManager.extensionEnabled {
+                    ExtensionApprovalHint()
+                }
+
                 if let restartCommand = mountManager.fskitRestartCommand {
                     FSKitRestartHint(command: restartCommand)
                 }
@@ -404,6 +439,48 @@ struct ConnectionDetailView: View {
 }
 
 // MARK: - 辅助视图
+
+/// 挂载失败疑似因「文件系统扩展」未在系统设置中启用时显示：给出一键前往系统设置启用扩展的按钮。
+struct ExtensionApprovalHint: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label("需要启用文件系统扩展", systemImage: "puzzlepiece.extension")
+                .font(.headline)
+                .foregroundStyle(.orange)
+
+            Text("挂载需要在「系统设置」中启用「SMBKeep File System」扩展。点按下方按钮前往，打开对应开关后再回到本 App 重新挂载。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Button {
+                openExtensionSettings()
+            } label: {
+                Label("打开系统设置", systemImage: "gearshape")
+            }
+            .buttonStyle(.borderedProminent)
+        }
+        .padding()
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 8)
+                .fill(Color.orange.opacity(0.1))
+        )
+    }
+
+    /// 优先用「文件系统扩展」类别深链，失败时退回到「登录项与扩展」页面。
+    private func openExtensionSettings() {
+        let candidates = [
+            MountManager.fileSystemExtensionsSettingsURL,
+            MountManager.loginItemsExtensionsSettingsURL
+        ]
+        for string in candidates {
+            if let url = URL(string: string), NSWorkspace.shared.open(url) {
+                return
+            }
+        }
+    }
+}
 
 /// 挂载失败疑似源于 FSKit 守护进程陈旧状态时显示：给出可一键复制的重启命令，由用户自行在终端执行。
 struct FSKitRestartHint: View {

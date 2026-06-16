@@ -1,69 +1,142 @@
-# SMBKeep —— 一个保持常连的 SMB 文件系统
+# SMBKeep — An Always-Connected SMB File System
 
-SMBKeep 是一个基于 Apple [FSKit](https://developer.apple.com/documentation/fskit) 框架实现的用户态 SMB 文件系统，目标是替代 macOS Finder 默认的 SMB 连接体验，让网络卷"挂上去就一直在"。
+**English** | [简体中文](README_CN.md)
 
-## 这个项目想解决什么
+SMBKeep is a user-space SMB file system built on Apple's [FSKit](https://developer.apple.com/documentation/fskit) framework. It aims to replace the default SMB experience in macOS Finder, keeping network volumes "mounted and always there."
 
-macOS 自带的 SMB 挂载在日常使用中有不少痛点：合盖休眠、切换网络、服务器短暂掉线之后，Finder 经常弹出"服务器连接已断开"的烦人提示，卷也需要手动重新连接。SMBKeep 把 SMB 客户端做进一个 FSKit 文件系统扩展里，自己管理连接和重连，尽量做到"无感保活"。
+> **System requirement: macOS 26.0 or later.**
+> This project uses FSKit APIs only available in macOS 26 (for example, passing the mount configuration via `FSPathURLResource`), so it **cannot be built or run on earlier versions, including macOS 15.4**.
 
-### 主要特性
+## What is FSKit
 
-- **替代 Finder 默认的 SMB 连接**：用自己的 FSKit 扩展挂载 SMB 共享，而不是依赖系统内置的 SMB 客户端。
-- **开机自动挂载所有卷**：登录后自动把已保存的所有连接挂载好，无需手动操作。
-- **自动重连 SMB 服务器**：连接中断后在后台自动恢复；即使笔记本合盖再打开，也不会再被"服务器已断开"的弹窗打扰。
-- **凭据安全存储**：服务器密码保存在 macOS Keychain 中，仓库与配置文件里都没有明文凭据。
+[FSKit](https://developer.apple.com/documentation/fskit) is a framework Apple introduced in macOS 15.4 and refined further in macOS 26. It lets developers implement full file systems in **user space**, with no need to write a kernel extension (kext). The file-system logic is packaged as an **App Extension** hosted by the system's `fskitd`: the system manages the mount lifecycle and forwards file-system requests, while the extension only has to implement volume operations such as reads and writes. SMBKeep puts an SMB client inside exactly such an FSKit extension, taking full control of mounting SMB volumes and keeping connections alive.
 
-## 关于代码质量的说明
+## What problem does this solve
 
-> 这个项目绝大部分代码都是由 AI "Vibe Coding" 生成的。
+macOS's built-in SMB mounting has plenty of day-to-day annoyances: after sleep (closing the lid), switching networks, or a brief server outage, Finder frequently pops up the irritating "The server connection was interrupted" alert, and the volume has to be reconnected by hand. SMBKeep builds the SMB client into an FSKit file-system extension that manages connections and reconnection itself, aiming for "seamless persistence."
 
-因此它**几乎肯定存在 bug**，不建议直接当作生产级软件依赖。它的主要价值在于作为一个**FSKit 的实用示例**——展示如何用 FSKit 实现一个真正能用、能挂载远程网络卷、并自行处理连接生命周期的文件系统，而不仅仅是官方文档里的最小 demo。
+### Key features
 
-如果你正在研究 FSKit，希望它能帮你少走一些弯路。
+- **Replaces Finder's default SMB connection**: mounts SMB shares through its own FSKit extension instead of relying on the system's built-in SMB client.
+- **Auto-mounts all volumes at login**: after you log in, all saved connections are mounted automatically — no manual steps.
+- **Auto-reconnects to the SMB server**: recovers in the background after a connection drops; even after closing and reopening the laptop lid, you won't be bothered by the "server disconnected" alert again.
+- **Secure credential storage**: server passwords are kept in the macOS Keychain — no plaintext credentials in the repo or any config file.
 
-## 开发与调试经验
+### App interface
 
-在开发 FSKit 扩展的过程中，有几条命令和注意事项非常关键，记录在此供后来者参考。
+A clean connection-management UI: saved connections on the left; details, mount status, and actions on the right.
 
-### 刷新 FSKit 相关缓存
+## Showcase
 
-修改并重新构建文件系统扩展后，系统往往仍在使用旧的已注册版本，导致行为不符合预期（例如改了代码却没生效、挂载失败、扩展不被识别等）。这时可以重启 FSKit 相关的守护进程来强制刷新：
+### No more Finder SMB-disconnect alerts
+
+After sleep, a network switch, or a brief server outage, the built-in SMB mounting in macOS often pops up this "The server connection was interrupted" alert and forces you to reconnect manually:
+
+<img src="resources/connection-interrupted.png" alt="macOS native SMB disconnect alert" width="380" />
+
+Once you mount with SMBKeep, the FSKit extension quietly handles disconnection and recovery in the background, so **this alert won't appear anymore**.
+
+![SMBKeep main interface](resources/sample.png)
+
+### Playback survives sleep
+
+The clips below demonstrate the full flow of "play a video → close the lid to sleep → open the lid to wake → keep playing," with no reconnection and no alerts at any point:
+
+Step 1: a video on the network volume is playing, then the lid is closed to put the laptop to sleep:
+
+<video src="resources/play_then_goto_sleep.mp4" controls width="640"></video>
+
+Step 2: after roughly 10 minutes, the lid is opened to wake the machine, and the video resumes playing right away — the connection has already recovered in the background:
+
+<video src="resources/awake_then_continue_play.mp4" controls width="640"></video>
+
+> Note: Finder's built-in SMB implementation cannot resume playback seamlessly after sleep. See: https://github.com/iina/iina/issues/5474
+
+## How it works
+
+```text
+┌──────────────────────────┐
+│ SMBKeep main app          │  Manages connections, saves config,
+│ SwiftUI management UI,     │  triggers mounts, sets up login launch
+│ can quit                   │
+└─────────────┬────────────┘
+              │ invokes /sbin/mount -F -t smbkeep
+              ▼
+┌──────────────────────────┐
+│ fskitd / FSKit            │  System hosts the mount lifecycle
+└─────────────┬────────────┘
+              │ loads the extension, forwards file-system requests
+              ▼
+┌──────────────────────────┐
+│ SMBKeepAppEx extension     │  Actually owns the volume, implements I/O
+│ · connects via libsmb2     │
+│ · watches network / wake   │
+│ · reconnects in background  │
+└─────────────┬────────────┘
+              │ SMB2 / TCP 445
+              ▼
+┌──────────────────────────┐
+│ Remote SMB server          │
+└──────────────────────────┘
+
+Login-item launch:
+macOS login → main app starts in background → auto-mounts volumes to restore → app quits
+```
+
+The main app only manages and initiates mounts; once a mount succeeds it can safely quit. Mounted volumes are kept alive by the `SMBKeepAppEx` extension process hosted by `fskitd` and do not depend on the main app staying alive. After a disconnect, network switch, or wake from sleep, the extension handles connection recovery in the background to keep the volume usable in Finder.
+
+## A note on code quality
+
+> The vast majority of this project's code was generated by AI "vibe coding."
+
+As a result it **almost certainly contains bugs** and is not recommended as production-grade software you depend on directly. Its main value is as a **practical FSKit example** — showing how to use FSKit to build a file system that genuinely works, can mount remote network volumes, and manages the connection lifecycle itself, rather than just the minimal demo in the official docs.
+
+If you're studying FSKit, hopefully it saves you some detours.
+
+## Development and debugging notes
+
+A few commands and caveats proved crucial while developing the FSKit extension; they're recorded here for those who follow.
+
+### Refreshing FSKit-related caches
+
+After modifying and rebuilding the file-system extension, the system often keeps using the previously registered version, leading to unexpected behavior (e.g., code changes don't take effect, mounting fails, the extension isn't recognized). Restart the FSKit daemons to force a refresh:
 
 ```bash
 sudo killall pkd fskitd fskit_agent
 ```
 
-- `pkd`：插件注册守护进程（PlugInKit daemon），负责发现和注册 App Extension。
-- `fskitd` / `fskit_agent`：FSKit 的系统服务，管理文件系统模块的加载与挂载。
+- `pkd`: the PlugInKit daemon, responsible for discovering and registering app extensions.
+- `fskitd` / `fskit_agent`: FSKit's system services that manage loading and mounting file-system modules.
 
-杀掉后系统会自动重启它们，从而重新扫描并加载最新构建的扩展。
+After being killed, the system restarts them automatically, re-scanning and loading the most recently built extension.
 
-### 重置 App 的用户授权（TCC）
+### Resetting the app's user authorizations (TCC)
 
-调试涉及隐私权限（如完全磁盘访问、网络等）时，授权状态会被系统缓存。如果想从"干净状态"重新测试授权弹窗与流程，可以重置该 App 的所有 TCC 授权记录：
+When debugging privacy-related permissions (full disk access, network, etc.), the authorization state is cached by the system. To re-test the permission prompts and flow from a "clean state," reset all TCC authorization records for the app:
 
 ```bash
 tccutil reset All <bundleID>
-# 例如：
+# For example:
 tccutil reset All com.example.apple-samplecode.SMBKeep
 ```
 
-之后再次运行 App，系统会像首次安装一样重新请求相关权限。
+The next time you run the app, the system will request the relevant permissions again as if freshly installed.
 
-### 打包（Archive / 导出）时的扩展冲突 ⚠️
+### Extension conflicts when archiving / exporting ⚠️
 
-这是一个很容易踩的坑：当你执行 **Archive** 时，生成的归档里包含了文件系统扩展（Extension），而 macOS 的 **LaunchServices 会扫描并识别归档内的这个 Extension**。这会和你最终导出的正式 App 包里的同一个 Extension 产生**注册冲突**，表现为扩展行为异常、挂载失败、或系统加载了错误版本的扩展。
+This is an easy trap: when you **Archive**, the resulting archive contains the file-system extension, and macOS **LaunchServices scans and registers that extension inside the archive**. This causes a **registration conflict** with the same extension in your final exported app bundle, manifesting as misbehaving extensions, failed mounts, or the system loading the wrong version.
 
-建议的处理方式：
+Recommended handling:
 
-1. Archive 并导出 App 之后，**立即删除 Archive 归档**，确保系统里不残留被 LaunchServices 识别到的重复 Extension。
-2. 在 Xcode 中 **清空 Build（Clean Build Folder，⇧⌘K）**，并清理 DerivedData，保证下一次构建是干净环境。
-3. 如有必要，配合上面的 `sudo killall pkd fskitd fskit_agent` 重新刷新扩展注册。
+1. After archiving and exporting the app, **delete the archive immediately** so no duplicate extension recognized by LaunchServices lingers on the system.
+2. In Xcode, **Clean Build Folder (⇧⌘K)** and clear DerivedData to ensure the next build is a clean environment.
+3. If needed, refresh extension registration with `sudo killall pkd fskitd fskit_agent` as above.
 
-保持"系统中同一时刻只有一份该 Extension 被注册"，是避免这类诡异问题的关键。
+Keeping "only one copy of the extension registered on the system at any time" is the key to avoiding these strange problems.
 
-## 致谢与许可
+## Acknowledgments and license
 
-- SMB 协议底层基于 [AMSMB2](deps/AMSMB2) / [libsmb2](deps/AMSMB2/Dependencies/libsmb2)。
-- 本项目结构参考自 Apple 官方示例 [Building a passthrough file system](https://developer.apple.com/documentation/fskit/building-a-passthrough-file-system)。
-- 许可信息见 [LICENSE.txt](LICENSE.txt)。
+- SMBKeep's own code is released under the [MIT License](LICENSE.txt).
+- SMB connectivity uses [libsmb2](https://github.com/sahlberg/libsmb2), which is licensed under **LGPL-2.1-or-later** and statically linked into the file system extension. Its full source is included under `deps/libsmb2`; see [deps/libsmb2/COPYING](deps/libsmb2/COPYING).
+- The project structure is based on Apple's official sample [Building a passthrough file system](https://developer.apple.com/documentation/fskit/building-a-passthrough-file-system) (MIT-style license).
+- See [LICENSE.txt](LICENSE.txt) for full license information, including third-party notices.

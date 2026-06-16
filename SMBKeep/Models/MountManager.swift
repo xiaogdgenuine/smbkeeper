@@ -6,6 +6,7 @@
 */
 
 import Foundation
+import FSKit
 import Network
 import OSLog
 
@@ -20,8 +21,19 @@ class MountManager: ObservableObject {
     /// 否则为 nil。App 沙箱不允许提权执行命令，因此交由用户手动重启。
     @Published var fskitRestartCommand: String?
 
+    /// 文件系统扩展当前是否已在系统中启用。
+    /// App 打开时主动检测，未启用时在 UI 上给出一键前往系统设置的入口；
+    /// 默认 true，避免首次检测完成前误报。
+    @Published var extensionEnabled = true
+
     /// 重启 FSKit 相关守护进程的命令。多数情况下并不需要执行，仅在挂载因陈旧状态失败时建议使用。
     static let fskitRestartCommand = "sudo killall pkd fskitd fskit_agent"
+
+    /// 直达「系统设置 → 通用 → 登录项与扩展 → 扩展 → 文件系统扩展」类别的深链（macOS 26）。
+    static let fileSystemExtensionsSettingsURL = "x-apple.systempreferences:com.apple.ExtensionsPreferences?extensionPointIdentifier=com.apple.fskit.fsmodule"
+
+    /// 退而求其次的深链：仅打开「登录项与扩展」页面（深链失效时的兜底）。
+    static let loginItemsExtensionsSettingsURL = "x-apple.systempreferences:com.apple.LoginItems-Settings.extension"
 
     private let logger = TimestampedLogger(subsystem: "com.example.smbkeep.mount", category: "MountManager")
     private let manager: SMBConnectionManager
@@ -38,11 +50,13 @@ class MountManager: ObservableObject {
                locale: LocalizationManager.shared.locale)
     }
 
+    /// 连接的挂载点。路径由 `SMBConnectionManager.mountPointPath` 统一计算
+    /// （以稳定的 connectionID 命名，与显示名解耦，保证替身长期有效）。
     private func mountPoint(for connection: SMBConnection) -> URL {
-        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        let bundleID = Bundle.main.bundleIdentifier ?? "com.example.smbkeep"
-        let appDir = appSupport.appendingPathComponent(bundleID)
-        let mountDir = appDir.appendingPathComponent(connection.displayName.trimmingCharacters(in: .whitespaces))
+        let path = SMBConnectionManager.mountPointPath(for: connection)
+            ?? FileManager.default.temporaryDirectory
+                .appendingPathComponent(connection.id.uuidString).path
+        let mountDir = URL(fileURLWithPath: path)
         try? FileManager.default.createDirectory(at: mountDir, withIntermediateDirectories: true)
         return mountDir
     }
@@ -62,8 +76,7 @@ class MountManager: ObservableObject {
         }
 
         // 从主 App 的 bundle 中获取扩展的 bundle identifier。
-        guard let extBundleID = Bundle.main.object(forInfoDictionaryKey: "EXTENSION_BUNDLE_ID") as? String
-                ?? guessExtensionBundleID() else {
+        guard let extBundleID = resolvedExtensionBundleID() else {
             lastError = localized("无法确定扩展的 Bundle ID")
             isBusy = false
             return false
@@ -83,6 +96,8 @@ class MountManager: ObservableObject {
         let result = await runMountCommand(extBundleID: extBundleID, sourceDir: sourceDir.path, mountPoint: mountPoint, connection: connection, silent: silent)
 
         if result {
+            // 挂载成功说明扩展已启用，同步清除可能存在的未启用告警。
+            extensionEnabled = true
             // 扩展已在 loadResource 中读过配置，因此立刻从磁盘擦除明文凭据。
             // 保留（现已为空的）source 目录，让挂载的 source 路径继续有效。
             manager.removeMountConfigFile(for: connection.id)
@@ -123,6 +138,35 @@ class MountManager: ObservableObject {
         return result
     }
 
+    // MARK: - 扩展状态检测
+
+    /// 解析 FSKit 扩展的 bundle identifier：优先取 Info.plist 中的 EXTENSION_BUNDLE_ID，
+    /// 否则按「主 App bundle ID + .AppEx」推断。
+    private func resolvedExtensionBundleID() -> String? {
+        Bundle.main.object(forInfoDictionaryKey: "EXTENSION_BUNDLE_ID") as? String ?? guessExtensionBundleID()
+    }
+
+    /// 主动检测文件系统扩展是否已被用户在系统设置中启用，并更新 `extensionEnabled`。
+    /// App 打开及每次回到前台时调用，使「未启用」告警能随用户在系统设置中的开关即时更新。
+    ///
+    /// 用 FSKit 的 `FSClient` 查询：`FSModuleIdentity.isEnabled` 反映的正是
+    /// 「系统设置 → 登录项与扩展 → 文件系统扩展」里那个开关的真实状态——
+    /// 这与 `pluginkit` 的注册/启用记录不是一回事（后者只能说明扩展是否已注册进系统）。
+    func refreshExtensionStatus() async {
+        guard let extBundleID = resolvedExtensionBundleID() else { return }
+        do {
+            let modules = try await FSClient.shared.installedExtensions
+            let enabled = modules.contains { $0.bundleIdentifier == extBundleID && $0.isEnabled }
+            if extensionEnabled != enabled {
+                extensionEnabled = enabled
+            }
+            logger.debug("FSKit module \(extBundleID) enabled=\(enabled) (installed modules: \(modules.count))")
+        } catch {
+            // 查询失败时不改变现有状态，避免误报。
+            logger.error("Failed to query FSKit installed extensions: \(error.localizedDescription)")
+        }
+    }
+
     // MARK: - 私有
 
     private func guessExtensionBundleID() -> String? {
@@ -131,8 +175,7 @@ class MountManager: ObservableObject {
     }
 
     private func registerExtension() async {
-        guard let extBundleID = Bundle.main.object(forInfoDictionaryKey: "EXTENSION_BUNDLE_ID") as? String
-                ?? guessExtensionBundleID() else {
+        guard let extBundleID = resolvedExtensionBundleID() else {
             return
         }
         // 确保扩展处于启用状态即可。实测无需每次都 ignore/use 来强制 fskitd 释放陈旧状态，
@@ -236,7 +279,7 @@ class MountManager: ObservableObject {
                 fskitRestartCommand = Self.fskitRestartCommand
                 lastError = localized("挂载失败，疑似 FSKit 守护进程状态陈旧。\n\n请在「终端」中执行下方命令重启 fskitd，然后重新挂载（多数情况下并不需要这一步）：\n\(Self.fskitRestartCommand)\n\n扩展 Bundle ID: \(extBundleID)")
             } else {
-                lastError = localized("所有自动挂载方法均失败。\n\n请确保系统扩展已被批准：打开「系统设置 → 通用 → 登陆项与扩展 → 扩展 → 按类别 → 文件系统扩展 → ⓘ → 启用 SMBKeep File System」\n\n扩展 Bundle ID: \(extBundleID)")
+                lastError = localized("所有自动挂载方法均失败。请在系统设置中启用「SMBKeep File System」文件系统扩展后重试。\n\n扩展 Bundle ID: \(extBundleID)")
             }
             return false
         }

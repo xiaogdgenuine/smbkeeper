@@ -305,6 +305,12 @@ class SMBConnectionManager: ObservableObject {
         }
     }
 
+    /// 连接的挂载点路径。
+    ///
+    /// 这里刻意用稳定的 `connection.id`（而非会变的 `displayName`）作为目录名：
+    /// 替身 / Finder 书签记录的是这个挂载点的绝对路径，一旦用户改了连接显示名，
+    /// 若路径跟着变，旧替身就会失效。用 connectionID 让挂载点终身不变，
+    /// 显示名只影响 Finder 里的卷名（由扩展的 volumeName 决定），与挂载路径解耦。
     static func mountPointPath(for connection: SMBConnection) -> String? {
         let fm = FileManager.default
         let bundleID = Bundle.main.bundleIdentifier ?? "com.example.smbkeep"
@@ -313,7 +319,8 @@ class SMBConnectionManager: ObservableObject {
         }
         let appDir = appSupport.appendingPathComponent(bundleID)
         return appDir
-            .appendingPathComponent(connection.displayName.trimmingCharacters(in: .whitespaces))
+            .appendingPathComponent("Mounts")
+            .appendingPathComponent(connection.id.uuidString)
             .path
     }
 

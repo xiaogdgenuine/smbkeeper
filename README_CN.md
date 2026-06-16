@@ -4,6 +4,12 @@
 
 SMBKeep 是一个基于 Apple [FSKit](https://developer.apple.com/documentation/fskit) 框架实现的用户态 SMB 文件系统，目标是替代 macOS Finder 默认的 SMB 连接体验，让网络卷"挂上去就一直在"。
 
+## 下载
+
+[![最新版本](https://img.shields.io/github/v/release/xiaogdgenuine/smbkeeper?label=%E6%9C%80%E6%96%B0%E7%89%88%E6%9C%AC)](https://github.com/xiaogdgenuine/smbkeeper/releases/latest)
+
+**[⬇️ 前往 Releases 页面下载最新版本](https://github.com/xiaogdgenuine/smbkeeper/releases/latest)**
+
 > **系统要求：macOS 26.0 及以上。**
 > 本项目使用了 macOS 26 才提供的 FSKit API（例如以 `FSPathURLResource` 传递挂载配置），因此**无法在更低版本（含 macOS 15.4）的系统上编译或运行**。
 

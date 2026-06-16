@@ -4,6 +4,12 @@
 
 SMBKeep is a user-space SMB file system built on Apple's [FSKit](https://developer.apple.com/documentation/fskit) framework. It aims to replace the default SMB experience in macOS Finder, keeping network volumes "mounted and always there."
 
+## Download
+
+[![Latest release](https://img.shields.io/github/v/release/xiaogdgenuine/smbkeeper?label=latest%20release)](https://github.com/xiaogdgenuine/smbkeeper/releases/latest)
+
+**[⬇️ Download the latest version from the Releases page](https://github.com/xiaogdgenuine/smbkeeper/releases/latest)**
+
 > **System requirement: macOS 26.0 or later.**
 > This project uses FSKit APIs only available in macOS 26 (for example, passing the mount configuration via `FSPathURLResource`), so it **cannot be built or run on earlier versions, including macOS 15.4**.
 

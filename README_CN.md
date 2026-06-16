@@ -50,11 +50,11 @@ macOS 自带的 SMB 挂载在日常使用中有不少痛点：合盖休眠、切
 
 第 1 步，正在播放网络卷上的视频，然后合盖让笔记本进入休眠：
 
-<video src="resources/play_then_goto_sleep.mp4" controls width="640"></video>
+[<video src="resources/play_then_goto_sleep.mp4" controls width="640"></video>](https://github.com/user-attachments/assets/c2541852-51b5-4758-8855-a9452ce1d247)
 
 第 2 步，等待 10 分钟左右，重新开盖唤醒，视频可以直接继续播放，连接已在后台自动恢复：
 
-<video src="resources/awake_then_continue_play.mp4" controls width="640"></video>
+[<video src="resources/awake_then_continue_play.mp4" controls width="640"></video>](https://github.com/user-attachments/assets/1d261e44-068b-4cfa-a74c-5f06648a521f)
 
 ```ff	
 注意：Finder 自带的 SMB 实现无法实现休眠后无缝播放，可查阅：https://github.com/iina/iina/issues/5474

@@ -24,20 +24,10 @@ class SMBKeepFSVolume: FSVolume,
                            FSVolume.OpenCloseOperations {
 
     var rootItem: SMBKeepFSItem
-    var itemCache: [UInt64: SMBKeepFSItem]
-    var itemCacheQueue: DispatchQueue
 
-    var enumerationCache: [UInt64: SMBKeepDirectorySnapshot] = [:]
-    var enumerationCacheGeneration: UInt64 = 0
-    let enumerationCacheLock = NSLock()
-
-    /// 最近一次已知的文件系统统计信息，在后台刷新。`volumeStatistics` 是 FSKit 的同步属性，
-    /// 因此它返回这个缓存值（由 `itemCacheQueue` 保护），而不是阻塞等待一次 SMB 往返。
-    var cachedFSAttrs: [FileAttributeKey: any Sendable]?
-
-    /// 名称 → item，对应某个目录 inode 下最近一次枚举出的子项（避免 readdir 之后再做 N 次 stat RPC）。
-    var directoryLookupCache: [UInt64: [String: SMBKeepFSItem]] = [:]
-    let directoryLookupCacheLock = NSLock()
+    /// 卷级别全部内存缓存的唯一持有者：inode→item 身份、目录子项查找、目录枚举快照、
+    /// 文件系统统计，全部收敛到它内部的单一串行队列上访问（替代过去散落的 DispatchQueue + 两个 NSLock）。
+    let cache = SMBKeepVolumeCache()
 
     /// 缓存的属性 / 目录列表在重新向服务器拉取前保持有效的时长，让外部变更得以可见。
     /// 在限制陈旧度的同时保持每次 readdir 分页的速度（类似 NFS 的属性缓存）。
@@ -70,8 +60,6 @@ class SMBKeepFSVolume: FSVolume,
         let startingPath = smbConfig.startingPath
         let rootInode = SMBAttributeMapping.inodeForPath(startingPath)
         self.rootItem = SMBKeepFSItem(name: ".", smbPath: startingPath, type: .directory, openFlags: .readOnly, inode: rootInode)
-        self.itemCache = [:]
-        self.itemCacheQueue = DispatchQueue(label: "com.apple.fskit.smbkeepfs.itemcache.queue")
         // 派生一个稳定的、每连接独立的卷 ID，让多个连接可以同时挂载而不共用同一个标识符。
         let volumeUUID = UUID(uuidString: smbConfig.connectionID) ?? UUID()
         super.init(volumeID: FSVolume.Identifier(uuid: volumeUUID), volumeName: volumeName)
@@ -118,19 +106,14 @@ class SMBKeepFSVolume: FSVolume,
         }
 
         Task {
-            var recoveredOnce = false
-            while true {
-                do {
-                    let target = UInt64(offset) + UInt64(length)
+            do {
+                let target = UInt64(offset) + UInt64(length)
+                try await self.withReconnect {
                     try await self.smb.truncateFile(atPath: snapshot.smbPath, atOffset: target)
-                    return replyHandler(length, nil)
-                } catch {
-                    if !recoveredOnce, await self.recoverFromConnectionLoss(error) {
-                        recoveredOnce = true
-                        continue
-                    }
-                    return replyHandler(0, error)
                 }
+                return replyHandler(length, nil)
+            } catch {
+                return replyHandler(0, error)
             }
         }
     }
@@ -145,29 +128,23 @@ class SMBKeepFSVolume: FSVolume,
         }
 
         Task {
-            var recoveredOnce = false
-            while true {
-                do {
+            do {
+                let data = try await self.withReconnect {
                     let snapshot = ptItem.stateSnapshot()
-                    let data = try await self.smb.read(path: snapshot.smbPath, offset: UInt64(offset), length: length)
-                    var copied = 0
-                    buffer.withUnsafeMutableBytes { raw in
-                        copied = min(data.count, length, raw.count)
-                        guard copied > 0, let base = raw.bindMemory(to: UInt8.self).baseAddress else { return }
-                        data.copyBytes(to: base, count: copied)
-                    }
-                    return replyHandler(copied, nil)
-                } catch {
-                    if !recoveredOnce, await self.recoverFromConnectionLoss(error) {
-                        recoveredOnce = true
-                        self.log("Read recovered after reconnect: \(ptItem.smbPath)")
-                        continue
-                    }
-                    let path = ptItem.smbPath
-                    self.log("Read failed: \(path) error=\(error)")
-                    self.logger.error("\(#function): read \(path) failed: \(error)")
-                    return replyHandler(0, error)
+                    return try await self.smb.read(path: snapshot.smbPath, offset: UInt64(offset), length: length)
                 }
+                var copied = 0
+                buffer.withUnsafeMutableBytes { raw in
+                    copied = min(data.count, length, raw.count)
+                    guard copied > 0, let base = raw.bindMemory(to: UInt8.self).baseAddress else { return }
+                    data.copyBytes(to: base, count: copied)
+                }
+                return replyHandler(copied, nil)
+            } catch {
+                let path = ptItem.smbPath
+                self.log("Read failed: \(path) error=\(error)")
+                self.logger.error("\(#function): read \(path) failed: \(error)")
+                return replyHandler(0, error)
             }
         }
     }
@@ -185,18 +162,13 @@ class SMBKeepFSVolume: FSVolume,
         }
 
         Task {
-            var recoveredOnce = false
-            while true {
-                do {
-                    let written = try await self.smb.write(path: snapshot.smbPath, data: contents, offset: UInt64(offset))
-                    return replyHandler(written, nil)
-                } catch {
-                    if !recoveredOnce, await self.recoverFromConnectionLoss(error) {
-                        recoveredOnce = true
-                        continue
-                    }
-                    return replyHandler(0, error)
+            do {
+                let written = try await self.withReconnect {
+                    try await self.smb.write(path: snapshot.smbPath, data: contents, offset: UInt64(offset))
                 }
+                return replyHandler(written, nil)
+            } catch {
+                return replyHandler(0, error)
             }
         }
     }
@@ -282,50 +254,50 @@ class SMBKeepFSVolume: FSVolume,
         return true
     }
 
+    /// 执行一次带「断线 → 重连后重试一次」语义的异步操作。
+    /// 首次失败若被判定为连接丢失、且重连成功（必要时按 `mode` 重开 `item`），就重试一次；
+    /// 否则、或重试再次失败，把错误抛出交由调用方回复。
+    ///
+    /// 这把过去散落在各操作里、重复了近十遍的 `recoveredOnce + while true` 模板收敛到唯一一处：
+    /// 既消除重复，也统一了恢复语义——各副本以往的细微差异（是否传 `reopening`、重试次数等）
+    /// 本身就是隐患。`operation` 不会被存储，因此可安全地被调用两次。
+    func withReconnect<T>(reopening item: SMBKeepFSItem? = nil,
+                          mode: SMBKeepFSItemOpenMode = .readOnly,
+                          _ operation: () async throws -> T) async throws -> T {
+        do {
+            return try await operation()
+        } catch {
+            guard await self.recoverFromConnectionLoss(error, reopening: item, mode: mode) else {
+                throw error
+            }
+            return try await operation()
+        }
+    }
+
     func clearAllDirectoryCaches() {
-        self.enumerationCacheLock.lock()
-        self.enumerationCache.removeAll(keepingCapacity: true)
-        self.enumerationCacheLock.unlock()
-        self.directoryLookupCacheLock.lock()
-        self.directoryLookupCache.removeAll(keepingCapacity: true)
-        self.directoryLookupCacheLock.unlock()
+        self.cache.clearDirectoryCaches()
     }
 
     func invalidateEnumerationCache(forInode inode: UInt64) {
-        guard inode != 0 else { return }
-        self.enumerationCacheLock.lock()
-        self.enumerationCache.removeValue(forKey: inode)
-        self.enumerationCacheLock.unlock()
-        self.directoryLookupCacheLock.lock()
-        self.directoryLookupCache.removeValue(forKey: inode)
-        self.directoryLookupCacheLock.unlock()
+        self.cache.invalidateDirectory(inode: inode)
     }
 
     /// 登记枚举出的子项，让后续的 `lookupItem` 调用免去额外的 SMB 往返。
     func registerEnumeratedChildren(_ entries: [SMBKeepDirEntry], in parent: SMBKeepFSItem) {
+        let parentSnapshot = parent.stateSnapshot()
         var byName: [String: SMBKeepFSItem] = [:]
         byName.reserveCapacity(entries.count)
-        let parentSnapshot = parent.stateSnapshot()
-        self.itemCacheQueue.sync {
-            for entry in entries {
-                let childPath = parentSnapshot.smbPath.appendingSMBComponent(entry.name)
-                let item = SMBKeepFSItem(name: entry.name, parent: parent, smbPath: childPath,
-                                             type: entry.itemType, inode: entry.itemID, cachedRaw: entry.raw)
-                byName[entry.name] = item
-                self.itemCache[entry.itemID] = item
-            }
+        for entry in entries {
+            let childPath = parentSnapshot.smbPath.appendingSMBComponent(entry.name)
+            let item = SMBKeepFSItem(name: entry.name, parent: parent, smbPath: childPath,
+                                         type: entry.itemType, inode: entry.itemID, cachedRaw: entry.raw)
+            byName[entry.name] = item
         }
-        self.directoryLookupCacheLock.lock()
-        self.directoryLookupCache[parentSnapshot.inode] = byName
-        self.directoryLookupCacheLock.unlock()
+        self.cache.registerChildren(byName, parentInode: parentSnapshot.inode)
     }
 
     func cachedChild(named name: String, in parent: SMBKeepFSItem) -> SMBKeepFSItem? {
-        let parentInode = parent.inode
-        self.directoryLookupCacheLock.lock()
-        let item = self.directoryLookupCache[parentInode]?[name]
-        self.directoryLookupCacheLock.unlock()
-        return item
+        self.cache.child(named: name, parentInode: parent.inode)
     }
 
     private func handleSystemDidWake() {

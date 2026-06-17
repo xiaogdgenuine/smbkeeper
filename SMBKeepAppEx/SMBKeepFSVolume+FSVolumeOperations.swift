@@ -57,7 +57,7 @@ extension SMBKeepFSVolume: FSVolume.Operations {
 
         // FSKit 是同步读取这个值的，所以我们不能阻塞等待一次 SMB 往返。
         // 返回上一次缓存的 statvfs，并在后台刷新它。
-        let cached: [FileAttributeKey: any Sendable]? = self.itemCacheQueue.sync { self.cachedFSAttrs }
+        let cached = self.cache.cachedFileSystemAttributes()
         if let fsAttrs = cached {
             if let total = fsAttrs[.systemSize] as? NSNumber {
                 res.totalBlocks = total.uint64Value / UInt64(res.blockSize)
@@ -81,7 +81,7 @@ extension SMBKeepFSVolume: FSVolume.Operations {
     private func refreshVolumeStatistics() async {
         do {
             let fsAttrs = try await self.smb.attributesOfFileSystem(forPath: "")
-            self.itemCacheQueue.sync { self.cachedFSAttrs = fsAttrs }
+            self.cache.setFileSystemAttributes(fsAttrs)
         } catch {
             self.logger.debug("\(#function): statvfs unavailable (\(error))")
         }
@@ -137,16 +137,12 @@ extension SMBKeepFSVolume: FSVolume.Operations {
         }
         Task {
             do {
-                return replyHandler(try await self.fetchAttributes(desiredAttributes, of: ptItem), nil)
+                let attrs = try await self.withReconnect(reopening: ptItem) {
+                    try await self.fetchAttributes(desiredAttributes, of: ptItem)
+                }
+                return replyHandler(attrs, nil)
             } catch {
-                guard await self.recoverFromConnectionLoss(error, reopening: ptItem) else {
-                    return replyHandler(nil, error)
-                }
-                do {
-                    return replyHandler(try await self.fetchAttributes(desiredAttributes, of: ptItem), nil)
-                } catch {
-                    return replyHandler(nil, error)
-                }
+                return replyHandler(nil, error)
             }
         }
     }
@@ -190,9 +186,8 @@ extension SMBKeepFSVolume: FSVolume.Operations {
         // 静默接受 uid/gid 变更；反正卷始终把当前用户报告为所有者。
 
         Task {
-            var recoveredOnce = false
-            while true {
-                do {
+            do {
+                let attrs = try await self.withReconnect(reopening: ptItem) { () -> FSItem.Attributes in
                     let snapshot = ptItem.stateSnapshot()
                     if newAttributes.isValid(.size), snapshot.itemType == .file {
                         try await self.smb.truncateFile(atPath: snapshot.smbPath, atOffset: newAttributes.size)
@@ -209,15 +204,11 @@ extension SMBKeepFSVolume: FSVolume.Operations {
                                                    .type, .fileID, .parentID, .flags,
                                                    .linkCount, .accessTime, .birthTime,
                                                    .modifyTime, .changeTime]
-                    let attrs = try await self.fetchAttributes(getRequest, of: ptItem)
-                    return replyHandler(attrs, nil)
-                } catch {
-                    if !recoveredOnce, await self.recoverFromConnectionLoss(error, reopening: ptItem) {
-                        recoveredOnce = true
-                        continue
-                    }
-                    return replyHandler(nil, error)
+                    return try await self.fetchAttributes(getRequest, of: ptItem)
                 }
+                return replyHandler(attrs, nil)
+            } catch {
+                return replyHandler(nil, error)
             }
         }
     }
@@ -245,34 +236,24 @@ extension SMBKeepFSVolume: FSVolume.Operations {
         let dirSnapshot = dirItem.stateSnapshot()
         let childPath = dirSnapshot.smbPath.appendingSMBComponent(nameString)
         Task {
-            var recoveredOnce = false
-            while true {
-                do {
+            do {
+                let (resultItem, replyName) = try await self.withReconnect(reopening: dirItem) { () -> (SMBKeepFSItem, FSFileName?) in
                     let attrs = try await self.smb.attributesOfItem(atPath: childPath)
                     let inode = SMBAttributeMapping.inode(from: attrs, fallbackPath: childPath)
-                    var cached: SMBKeepFSItem?
-                    self.itemCacheQueue.sync {
-                        cached = self.itemCache[inode]
-                    }
-                    if let cached, cached.smbPath == childPath {
-                        return replyHandler(cached, nil, nil)
+                    if let cached = self.cache.item(forInode: inode), cached.smbPath == childPath {
+                        return (cached, nil)
                     }
 
                     let type = SMBAttributeMapping.itemType(from: attrs)
                     let raw = SMBAttributeMapping.rawAttributes(from: attrs, path: childPath)
                     let newItem = SMBKeepFSItem(name: nameString, parent: dirItem, smbPath: childPath,
                                                     type: type, inode: inode, cachedRaw: raw)
-                    self.itemCacheQueue.sync {
-                        self.itemCache[inode] = newItem
-                    }
-                    return replyHandler(newItem, name, nil)
-                } catch {
-                    if !recoveredOnce, await self.recoverFromConnectionLoss(error, reopening: dirItem) {
-                        recoveredOnce = true
-                        continue
-                    }
-                    return replyHandler(nil, nil, error)
+                    self.cache.setItem(newItem, forInode: inode)
+                    return (newItem, name)
                 }
+                return replyHandler(resultItem, replyName, nil)
+            } catch {
+                return replyHandler(nil, nil, error)
             }
         }
     }
@@ -282,9 +263,7 @@ extension SMBKeepFSVolume: FSVolume.Operations {
             return replyHandler(POSIXError(.EINVAL))
         }
         let snapshot = ptItem.stateSnapshot()
-        self.itemCacheQueue.sync {
-            self.itemCache.removeValue(forKey: snapshot.inode)
-        }
+        self.cache.removeItem(forInode: snapshot.inode)
         self.invalidateEnumerationCache(forInode: snapshot.inode)
         // 兜底保护：确保没有句柄比正被回收的 item 活得更久。
         if snapshot.itemType == .file {
@@ -300,23 +279,18 @@ extension SMBKeepFSVolume: FSVolume.Operations {
             return replyHandler(nil, POSIXError(.EINVAL))
         }
         Task {
-            var recoveredOnce = false
-            while true {
-                do {
+            do {
+                let data = try await self.withReconnect(reopening: ptItem) { () -> Data in
                     let snapshot = ptItem.stateSnapshot()
                     let dest = try await self.smb.destinationOfSymbolicLink(atPath: snapshot.smbPath)
-                    let data = Data(dest.utf8)
-                    guard data.count <= maxSymlinkSize else {
-                        return replyHandler(nil, POSIXError(.ENAMETOOLONG))
-                    }
-                    return replyHandler(FSFileName(data: data), nil)
-                } catch {
-                    if !recoveredOnce, await self.recoverFromConnectionLoss(error, reopening: ptItem) {
-                        recoveredOnce = true
-                        continue
-                    }
-                    return replyHandler(nil, error)
+                    return Data(dest.utf8)
                 }
+                guard data.count <= maxSymlinkSize else {
+                    return replyHandler(nil, POSIXError(.ENAMETOOLONG))
+                }
+                return replyHandler(FSFileName(data: data), nil)
+            } catch {
+                return replyHandler(nil, error)
             }
         }
     }
@@ -339,37 +313,28 @@ extension SMBKeepFSVolume: FSVolume.Operations {
         let dirSnapshot = dirItem.stateSnapshot()
         let childPath = dirSnapshot.smbPath.appendingSMBComponent(nameString)
         Task {
-            var recoveredOnce = false
-            while true {
-                do {
+            do {
+                let newItem = try await self.withReconnect(reopening: dirItem) { () -> SMBKeepFSItem in
                     switch type {
                     case .directory:
                         try await self.smb.createDirectory(atPath: childPath)
                     case .file:
                         try await self.smb.createEmptyFile(atPath: childPath)
                     default:
-                        return replyHandler(nil, nil, POSIXError(.EINVAL))
+                        throw POSIXError(.EINVAL)
                     }
-
-                    let newItem = try await SMBKeepFSItem(name: nameString, parent: dirItem, type: type, backend: self.smb)
-                    self.setAttributes(newAttributes, on: newItem, creatingNewFile: true) { attrs, error in
-                        guard error == nil else {
-                            return replyHandler(nil, nil, error)
-                        }
-                        self.itemCacheQueue.sync {
-                            self.itemCache[newItem.inode] = newItem
-                        }
-                        self.invalidateEnumerationCache(forInode: dirSnapshot.inode)
-                        replyHandler(newItem, name, nil)
-                    }
-                    return
-                } catch {
-                    if !recoveredOnce, await self.recoverFromConnectionLoss(error, reopening: dirItem) {
-                        recoveredOnce = true
-                        continue
-                    }
-                    return replyHandler(nil, nil, error)
+                    return try await SMBKeepFSItem(name: nameString, parent: dirItem, type: type, backend: self.smb)
                 }
+                self.setAttributes(newAttributes, on: newItem, creatingNewFile: true) { attrs, error in
+                    guard error == nil else {
+                        return replyHandler(nil, nil, error)
+                    }
+                    self.cache.setItem(newItem, forInode: newItem.inode)
+                    self.invalidateEnumerationCache(forInode: dirSnapshot.inode)
+                    replyHandler(newItem, name, nil)
+                }
+            } catch {
+                return replyHandler(nil, nil, error)
             }
         }
     }
@@ -407,9 +372,7 @@ extension SMBKeepFSVolume: FSVolume.Operations {
                     guard error == nil else {
                         return replyHandler(nil, nil, error)
                     }
-                    self.itemCacheQueue.sync {
-                        self.itemCache[newItem.inode] = newItem
-                    }
+                    self.cache.setItem(newItem, forInode: newItem.inode)
                     self.invalidateEnumerationCache(forInode: dirSnapshot.inode)
                     replyHandler(newItem, name, nil)
                 }
@@ -439,23 +402,16 @@ extension SMBKeepFSVolume: FSVolume.Operations {
         let dirSnapshot = dirItem.stateSnapshot()
 
         Task {
-            var recoveredOnce = false
-            while true {
-                do {
+            do {
+                try await self.withReconnect(reopening: dirItem) {
                     let itemSnapshot = ptItem.stateSnapshot()
                     try await self.smb.removeItem(atPath: itemSnapshot.smbPath)
-                    self.itemCacheQueue.sync {
-                        self.itemCache.removeValue(forKey: itemSnapshot.inode)
-                    }
+                    self.cache.removeItem(forInode: itemSnapshot.inode)
                     self.invalidateEnumerationCache(forInode: dirSnapshot.inode)
-                    return replyHandler(nil)
-                } catch {
-                    if !recoveredOnce, await self.recoverFromConnectionLoss(error, reopening: dirItem) {
-                        recoveredOnce = true
-                        continue
-                    }
-                    return replyHandler(error)
                 }
+                return replyHandler(nil)
+            } catch {
+                return replyHandler(error)
             }
         }
     }
@@ -481,33 +437,22 @@ extension SMBKeepFSVolume: FSVolume.Operations {
         let destPath = toDirSnapshot.smbPath.appendingSMBComponent(destName)
 
         Task {
-            var recoveredOnce = false
-            while true {
-                do {
+            do {
+                try await self.withReconnect {
                     let currentFrom = fromItem.stateSnapshot()
                     try await self.smb.moveItem(atPath: currentFrom.smbPath, toPath: destPath)
                     fromItem.updateIdentityAfterRename(name: destName, parent: toDir, smbPath: destPath)
 
-                    self.itemCacheQueue.sync {
-                        self.itemCache.removeValue(forKey: fromInode)
-                        self.itemCache[fromItem.inode] = fromItem
-                    }
-                    if let over = overItem as? SMBKeepFSItem, over !== fromItem {
-                        let overInode = over.inode
-                        self.itemCacheQueue.sync {
-                            self.itemCache.removeValue(forKey: overInode)
-                        }
-                    }
+                    let over = overItem as? SMBKeepFSItem
+                    let overInode = (over != nil && over !== fromItem) ? over?.inode : nil
+                    self.cache.reassignItem(fromItem, fromInode: fromInode,
+                                            toInode: fromItem.inode, replacingInode: overInode)
                     self.invalidateEnumerationCache(forInode: fromDirSnapshot.inode)
                     self.invalidateEnumerationCache(forInode: toDirSnapshot.inode)
-                    return replyHandler(destinationName, nil)
-                } catch {
-                    if !recoveredOnce, await self.recoverFromConnectionLoss(error) {
-                        recoveredOnce = true
-                        continue
-                    }
-                    return replyHandler(nil, error)
                 }
+                return replyHandler(destinationName, nil)
+            } catch {
+                return replyHandler(nil, error)
             }
         }
     }
@@ -531,35 +476,30 @@ extension SMBKeepFSVolume: FSVolume.Operations {
         self.smb.resumeReconnects()
 
         Task {
-            var recoveredOnce = false
-            while true {
-                do {
-                    let snapshot = try await self.directorySnapshot(for: dirItem, cookie: cookie, verifier: verifier)
-                    let startIndex = Int(cookie.rawValue)
-                    if startIndex < snapshot.entries.count {
-                        for index in startIndex..<snapshot.entries.count {
-                            let entry = snapshot.entries[index]
-                            var itemAttributes: FSItem.Attributes?
-                            if let attributes {
-                                itemAttributes = self.projectAttributes(entry.raw, itemType: entry.itemType,
-                                                                        parentInode: dirSnapshot.inode, desired: attributes)
-                            }
-                            let packed = packer.packEntry(name: FSFileName(string: entry.name),
-                                                          itemType: entry.itemType,
-                                                          itemID: FSItem.Identifier(rawValue: entry.itemID) ?? .invalid,
-                                                          nextCookie: FSDirectoryCookie(UInt64(index + 1)),
-                                                          attributes: itemAttributes)
-                            if !packed { break }
-                        }
-                    }
-                    return replyHandler(FSDirectoryVerifier(snapshot.verifier), nil)
-                } catch {
-                    if !recoveredOnce, await self.recoverFromConnectionLoss(error, reopening: dirItem) {
-                        recoveredOnce = true
-                        continue
-                    }
-                    return replyHandler(FSDirectoryVerifier(0), error)
+            do {
+                let snapshot = try await self.withReconnect(reopening: dirItem) {
+                    try await self.directorySnapshot(for: dirItem, cookie: cookie, verifier: verifier)
                 }
+                let startIndex = Int(cookie.rawValue)
+                if startIndex < snapshot.entries.count {
+                    for index in startIndex..<snapshot.entries.count {
+                        let entry = snapshot.entries[index]
+                        var itemAttributes: FSItem.Attributes?
+                        if let attributes {
+                            itemAttributes = self.projectAttributes(entry.raw, itemType: entry.itemType,
+                                                                    parentInode: dirSnapshot.inode, desired: attributes)
+                        }
+                        let packed = packer.packEntry(name: FSFileName(string: entry.name),
+                                                      itemType: entry.itemType,
+                                                      itemID: FSItem.Identifier(rawValue: entry.itemID) ?? .invalid,
+                                                      nextCookie: FSDirectoryCookie(UInt64(index + 1)),
+                                                      attributes: itemAttributes)
+                        if !packed { break }
+                    }
+                }
+                return replyHandler(FSDirectoryVerifier(snapshot.verifier), nil)
+            } catch {
+                return replyHandler(FSDirectoryVerifier(0), error)
             }
         }
     }
@@ -567,35 +507,17 @@ extension SMBKeepFSVolume: FSVolume.Operations {
     private func directorySnapshot(for dirItem: SMBKeepFSItem,
                                    cookie: FSDirectoryCookie,
                                    verifier: FSDirectoryVerifier) async throws -> SMBKeepDirectorySnapshot {
-        self.enumerationCacheLock.lock()
         let dirSnapshot = dirItem.stateSnapshot()
-        if let cached = self.enumerationCache[dirSnapshot.inode] {
-            // readdir 分页过程中必须保持一致，因此续读时总是复用同一份快照。
-            // 而全新的一次打开只在 TTL 内复用，超过则重新列举以反映外部变更。
-            let matchesResume = cookie.rawValue != 0 && cached.verifier == verifier.rawValue
-            let isFresh = Date().timeIntervalSince(cached.createdAt) < self.directoryCacheTTL
-            let matchesFreshOpen = cookie.rawValue == 0 && verifier.rawValue == 0 && isFresh
-            if matchesResume || matchesFreshOpen {
-                self.enumerationCacheLock.unlock()
-                return cached
-            }
+        // readdir 分页过程中必须保持一致，因此续读时总是复用同一份快照；
+        // 而全新的一次打开只在 TTL 内复用，超过则重新列举以反映外部变更（具体判定在缓存内部）。
+        if let cached = self.cache.enumerationSnapshot(forInode: dirSnapshot.inode,
+                                                       cookie: cookie.rawValue,
+                                                       verifier: verifier.rawValue,
+                                                       ttl: self.directoryCacheTTL) {
+            return cached
         }
-        self.enumerationCacheLock.unlock()
-
         let entries = try await self.snapshotDirectory(atPath: dirSnapshot.smbPath, parent: dirItem)
-
-        self.enumerationCacheLock.lock()
-        defer { self.enumerationCacheLock.unlock() }
-        self.enumerationCacheGeneration += 1
-        let snapshot = SMBKeepDirectorySnapshot(verifier: self.enumerationCacheGeneration, entries: entries)
-        if self.enumerationCache.count >= 64 {
-            self.enumerationCache.removeAll(keepingCapacity: true)
-            self.directoryLookupCacheLock.lock()
-            self.directoryLookupCache.removeAll(keepingCapacity: true)
-            self.directoryLookupCacheLock.unlock()
-        }
-        self.enumerationCache[dirSnapshot.inode] = snapshot
-        return snapshot
+        return self.cache.storeEnumeration(forInode: dirSnapshot.inode, entries: entries)
     }
 
     private func snapshotDirectory(atPath path: String,

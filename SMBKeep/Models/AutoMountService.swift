@@ -16,10 +16,10 @@ enum AutoMountService {
     /// 自动挂载的总时间预算。开机瞬间网卡/路由常常还没就绪，
     /// 首次连接会以 “No route to host” 失败；在这个预算内对失败项反复重试，
     /// 超过预算还挂不上就放弃，避免无谓地一直占用进程。
-    private static let retryBudget: TimeInterval = 30
+    private static let retryBudget: TimeInterval = 60
 
-    /// 两轮重试之间的等待间隔。
-    private static let retryInterval: TimeInterval = 3
+//    /// 两轮重试之间的等待间隔。
+//    private static let retryInterval: TimeInterval = 3
 
     /// 挂载用户上次挂载过的所有连接（记录在 `autoMountUUIDs` 中）。
     /// 当 `silent` 为 true 时静默运行（不弹出管理员授权）。
@@ -48,6 +48,7 @@ enum AutoMountService {
 
             for connection in pending {
                 let ok = await mounter.mount(connection: connection, silent: silent)
+                try? await Task.sleep(for: .seconds(3))
                 logger.debug("Auto-mount \(connection.displayName) [round \(round)]: \(ok ? "ok" : "failed")")
                 if !ok {
                     stillFailing.append(connection)
@@ -64,8 +65,8 @@ enum AutoMountService {
                 break
             }
 
-            let sleepSeconds = min(retryInterval, remaining)
-            try? await Task.sleep(nanoseconds: UInt64(sleepSeconds * 1_000_000_000))
+//            let sleepSeconds = min(retryInterval, remaining)
+//            try? await Task.sleep(nanoseconds: UInt64(sleepSeconds * 1_000_000_000))
         }
     }
 }

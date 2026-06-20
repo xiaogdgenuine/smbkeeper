@@ -8,6 +8,18 @@
 import Foundation
 import SMB2
 
+/// Swift 6：`Task` 要求 `@Sendable` 捕获；FSKit 回调不在此列，用盒包装后再传入 `Task`。
+struct FSKitSendableBox<T>: @unchecked Sendable {
+    let value: T
+    init(_ value: T) { self.value = value }
+}
+
+/// libsmb2 句柄由 client 的 `loop` 独占；跨 await 边界时视为 Sendable。
+extension OpaquePointer: @unchecked Sendable {}
+
+/// C 结构体 stat 结果由值拷贝传递，跨 await 边界时视为 Sendable。
+extension smb2_stat_64: @unchecked Sendable {}
+
 enum SMB2LibSupport {
 
     static func posixError(fromContext context: UnsafeMutablePointer<smb2_context>?, code: Int32) -> POSIXError {

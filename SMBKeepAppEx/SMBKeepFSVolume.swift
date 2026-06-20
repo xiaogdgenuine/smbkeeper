@@ -17,11 +17,13 @@ let maxSymlinkSize: Int = 4096
 let modeAllBits: Int32 = 0o7777
 
 /// SMBKeepFSVolume 表示一个以 SMB 共享为后端的卷。
+/// FSKit 从多线程回调；可变状态由 `cache` 串行队列与 `smb` 事件循环保护。
 class SMBKeepFSVolume: FSVolume,
                            FSVolume.ReadWriteOperations,
                            FSVolume.RenameOperations,
                            FSVolume.PreallocateOperations,
-                           FSVolume.OpenCloseOperations {
+                           FSVolume.OpenCloseOperations,
+                           @unchecked Sendable {
 
     var rootItem: SMBKeepFSItem
 
@@ -106,15 +108,16 @@ class SMBKeepFSVolume: FSVolume,
             return replyHandler(0, POSIXError(.EPERM))
         }
 
+        let replyBox = FSKitSendableBox(replyHandler)
         Task {
             do {
                 let target = UInt64(offset) + UInt64(length)
                 try await self.withReconnect {
                     try await self.smb.truncateFile(atPath: snapshot.smbPath, atOffset: target)
                 }
-                return replyHandler(length, nil)
+                return replyBox.value(length, nil)
             } catch {
-                return replyHandler(0, error)
+                return replyBox.value(0, error)
             }
         }
     }
@@ -131,22 +134,24 @@ class SMBKeepFSVolume: FSVolume,
         let path = ptItem.smbPath
         let snapshot = ptItem.stateSnapshot()
 
+        let replyBox = FSKitSendableBox(replyHandler)
+        let bufferBox = FSKitSendableBox(buffer)
         Task.detached {
             do {
                 let data = try await self.withReconnect {
                     return try await self.smb.read(path: snapshot.smbPath, offset: UInt64(offset), length: length)
                 }
                 var copied = 0
-                buffer.withUnsafeMutableBytes { raw in
+                bufferBox.value.withUnsafeMutableBytes { raw in
                     copied = min(data.count, length, raw.count)
                     guard copied > 0, let base = raw.bindMemory(to: UInt8.self).baseAddress else { return }
                     data.copyBytes(to: base, count: copied)
                 }
-                return replyHandler(copied, nil)
+                return replyBox.value(copied, nil)
             } catch {
                 self.log("Read failed: \(path) error=\(error)")
                 self.logger.error("\(#function): read \(path) failed: \(error)")
-                return replyHandler(0, error)
+                return replyBox.value(0, error)
             }
         }
     }
@@ -163,14 +168,15 @@ class SMBKeepFSVolume: FSVolume,
             return replyHandler(0, POSIXError(.EISDIR))
         }
 
+        let replyBox = FSKitSendableBox(replyHandler)
         Task {
             do {
                 let written = try await self.withReconnect {
                     try await self.smb.write(path: snapshot.smbPath, data: contents, offset: UInt64(offset))
                 }
-                return replyHandler(written, nil)
+                return replyBox.value(written, nil)
             } catch {
-                return replyHandler(0, error)
+                return replyBox.value(0, error)
             }
         }
     }

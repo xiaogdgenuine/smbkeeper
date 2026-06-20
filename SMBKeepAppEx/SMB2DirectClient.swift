@@ -39,7 +39,8 @@ private func smb2RequestCompletion(_ smb2: UnsafeMutablePointer<smb2_context>?,
 final class SMB2DirectClient: @unchecked Sendable {
 
     /// 当前存活的 client（每卷一个）。C 回调无法携带 `self`，靠它路由。
-    fileprivate static weak var shared: SMB2DirectClient?
+    /// 只在 client 的 `loop` 上读写；`nonisolated(unsafe)` 供 C 回调从任意线程查找。
+    nonisolated(unsafe) fileprivate static weak var shared: SMB2DirectClient?
 
     // MARK: 存储状态（全部只在 `loop` 上访问）
 
@@ -73,7 +74,7 @@ final class SMB2DirectClient: @unchecked Sendable {
     private struct OpenWaiter {
         let needWrite: Bool
         let createIfMissing: Bool
-        let continuation: CheckedContinuation<OpaquePointer, Error>
+        let continuation: CheckedContinuation<FSKitSendableBox<OpaquePointer>, Error>
     }
     private var openWaiters: [String: [OpenWaiter]] = [:]
     private var opening: Set<String> = []
@@ -515,7 +516,7 @@ final class SMB2DirectClient: @unchecked Sendable {
         interpret: @escaping (Int32, UnsafeMutableRawPointer?, UnsafeMutablePointer<smb2_context>) -> Result<T, Error>,
         cleanup: (() -> Void)? = nil
     ) async throws -> T {
-        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<T, Error>) in
+        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<FSKitSendableBox<T>, Error>) in
             loop.async {
                 guard let ctx = self.context else {
                     cleanup?()
@@ -529,7 +530,7 @@ final class SMB2DirectClient: @unchecked Sendable {
                     complete: { status, commandData in
                         let result = interpret(status, commandData, ctx)
                         cleanup?()
-                        cont.resume(with: result)
+                        cont.resume(with: result.map { FSKitSendableBox($0) })
                     },
                     failAfterContextDestroyed: {
                         cleanup?()
@@ -550,7 +551,7 @@ final class SMB2DirectClient: @unchecked Sendable {
                     }
                 }
             }
-        }
+        }.value
     }
 
     private func submitVoid(
@@ -565,14 +566,14 @@ final class SMB2DirectClient: @unchecked Sendable {
 
     private func acquireHandle(path: String, needWrite: Bool, createIfMissing: Bool) async throws -> OpaquePointer {
         let copiedPath = path.withCString { String(cString: $0) }
-        return try await withCheckedThrowingContinuation { (cont: CheckedContinuation<OpaquePointer, Error>) in
+        return try await withCheckedThrowingContinuation { (cont: CheckedContinuation<FSKitSendableBox<OpaquePointer>, Error>) in
             loop.async {
                 guard self.context != nil else {
                     cont.resume(throwing: POSIXError(.ENOTCONN))
                     return
                 }
                 if let cached = self.handles[copiedPath], !needWrite || cached.writable {
-                    cont.resume(returning: cached.fh)
+                    cont.resume(returning: FSKitSendableBox(cached.fh))
                     return
                 }
                 self.openWaiters[copiedPath, default: []].append(
@@ -582,7 +583,7 @@ final class SMB2DirectClient: @unchecked Sendable {
                     self.beginOpen(path: copiedPath)
                 }
             }
-        }
+        }.value
     }
 
     /// 为 `path` 启动一轮 `smb2_open`。必须在 `loop` 上运行。
@@ -649,7 +650,7 @@ final class SMB2DirectClient: @unchecked Sendable {
         var needAnotherRound: [OpenWaiter] = []
         for w in waiters {
             if !w.needWrite || openedWritable {
-                w.continuation.resume(returning: fh)
+                w.continuation.resume(returning: FSKitSendableBox(fh))
             } else {
                 needAnotherRound.append(w)
             }

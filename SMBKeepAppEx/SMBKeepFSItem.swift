@@ -18,7 +18,8 @@ enum SMBKeepFSItemOpenMode: Int32 {
 }
 
 /// SMBKeepFSItem 表示一个以 SMB 路径为后端的文件系统 item。
-class SMBKeepFSItem: FSItem {
+/// 可变状态由 `stateLock` 保护；FSKit 会从多线程访问 item 引用。
+class SMBKeepFSItem: FSItem, @unchecked Sendable {
 
     private let stateLock = NSLock()
     private var _smbPath: String

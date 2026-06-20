@@ -74,8 +74,9 @@ private func loadConfig(from resource: FSResource) -> SMBConfiguration? {
 }
 
 /// 通过 FSKit 暴露一个 SMB 共享的文件系统。
+/// FSKit 生命周期回调与内部 `Task` 可能并发；`loadedVolume` 仅在 load/unload 路径上变更。
 @objc
-class SMBKeepFileSystem: FSUnaryFileSystem & FSUnaryFileSystemOperations {
+class SMBKeepFileSystem: FSUnaryFileSystem, FSUnaryFileSystemOperations, @unchecked Sendable {
 
     var loadedVolume: SMBKeepFSVolume?
 
@@ -108,16 +109,17 @@ class SMBKeepFileSystem: FSUnaryFileSystem & FSUnaryFileSystemOperations {
         self.loadedVolume = volume
 
         // 异步建立 SMB 连接，连接成功后再上报就绪。
+        let replyBox = FSKitSendableBox(replyHandler)
         Task {
             do {
                 try await backend.connect()
                 self.containerStatus = .ready
                 volume.log("Volume mounted: \(smbConfig.displayName) at \(smbConfig.serverURL)/\(smbConfig.shareName)")
-                replyHandler(volume, nil)
+                replyBox.value(volume, nil)
             } catch {
                 TimestampedLogger.smbkeepfs.error("\(#function): SMB connect failed: \(error)")
                 self.loadedVolume = nil
-                replyHandler(nil, error)
+                replyBox.value(nil, error)
             }
         }
     }

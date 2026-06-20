@@ -115,16 +115,17 @@ extension SMBKeepFSVolume: FSVolume.Operations {
     public func synchronize(flags: FSSyncFlags, replyHandler reply: @escaping ((any Error)?) -> Void) {
         // 把缓存的可写句柄刷写到服务器。pwrite 已经把字节送达；
         // fsync 是请求服务器把它们落到稳定存储。
+        let replyBox = FSKitSendableBox(reply)
         Task {
             do {
                 try await self.smb.flushAll()
-                return reply(nil)
+                return replyBox.value(nil)
             } catch {
                 if await self.recoverFromConnectionLoss(error) {
                     // 重连之后已经没有可刷写的打开句柄了。
-                    return reply(nil)
+                    return replyBox.value(nil)
                 }
-                return reply(error)
+                return replyBox.value(error)
             }
         }
     }
@@ -135,14 +136,16 @@ extension SMBKeepFSVolume: FSVolume.Operations {
         guard let ptItem = item as? SMBKeepFSItem else {
             return replyHandler(nil, POSIXError(.EINVAL))
         }
+        let replyBox = FSKitSendableBox(replyHandler)
+        let desiredBox = FSKitSendableBox(desiredAttributes)
         Task {
             do {
                 let attrs = try await self.withReconnect(reopening: ptItem) {
-                    try await self.fetchAttributes(desiredAttributes, of: ptItem)
+                    try await self.fetchAttributes(desiredBox.value, of: ptItem)
                 }
-                return replyHandler(attrs, nil)
+                return replyBox.value(attrs, nil)
             } catch {
-                return replyHandler(nil, error)
+                return replyBox.value(nil, error)
             }
         }
     }
@@ -185,15 +188,17 @@ extension SMBKeepFSVolume: FSVolume.Operations {
 
         // 静默接受 uid/gid 变更；反正卷始终把当前用户报告为所有者。
 
+        let replyBox = FSKitSendableBox(replyHandler)
+        let newAttributesBox = FSKitSendableBox(newAttributes)
         Task {
             do {
                 let attrs = try await self.withReconnect(reopening: ptItem) { () -> FSItem.Attributes in
                     let snapshot = ptItem.stateSnapshot()
-                    if newAttributes.isValid(.size), snapshot.itemType == .file {
-                        try await self.smb.truncateFile(atPath: snapshot.smbPath, atOffset: newAttributes.size)
+                    if newAttributesBox.value.isValid(.size), snapshot.itemType == .file {
+                        try await self.smb.truncateFile(atPath: snapshot.smbPath, atOffset: newAttributesBox.value.size)
                     }
 
-                    let urlAttrs = SMBAttributeMapping.urlAttributes(from: newAttributes)
+                    let urlAttrs = SMBAttributeMapping.urlAttributes(from: newAttributesBox.value)
                     if !urlAttrs.isEmpty {
                         try await self.smb.setAttributes(urlAttrs, atPath: snapshot.smbPath)
                     }
@@ -206,9 +211,9 @@ extension SMBKeepFSVolume: FSVolume.Operations {
                                                    .modifyTime, .changeTime]
                     return try await self.fetchAttributes(getRequest, of: ptItem)
                 }
-                return replyHandler(attrs, nil)
+                return replyBox.value(attrs, nil)
             } catch {
-                return replyHandler(nil, error)
+                return replyBox.value(nil, error)
             }
         }
     }
@@ -235,6 +240,8 @@ extension SMBKeepFSVolume: FSVolume.Operations {
 
         let dirSnapshot = dirItem.stateSnapshot()
         let childPath = dirSnapshot.smbPath.appendingSMBComponent(nameString)
+        let replyBox = FSKitSendableBox(replyHandler)
+        let nameBox = FSKitSendableBox(name)
         Task {
             do {
                 let (resultItem, replyName) = try await self.withReconnect(reopening: dirItem) { () -> (SMBKeepFSItem, FSFileName?) in
@@ -249,11 +256,11 @@ extension SMBKeepFSVolume: FSVolume.Operations {
                     let newItem = SMBKeepFSItem(name: nameString, parent: dirItem, smbPath: childPath,
                                                     type: type, inode: inode, cachedRaw: raw)
                     self.cache.setItem(newItem, forInode: inode)
-                    return (newItem, name)
+                    return (newItem, nameBox.value)
                 }
-                return replyHandler(resultItem, replyName, nil)
+                return replyBox.value(resultItem, replyName, nil)
             } catch {
-                return replyHandler(nil, nil, error)
+                return replyBox.value(nil, nil, error)
             }
         }
     }
@@ -278,6 +285,7 @@ extension SMBKeepFSVolume: FSVolume.Operations {
         guard let ptItem = item as? SMBKeepFSItem else {
             return replyHandler(nil, POSIXError(.EINVAL))
         }
+        let replyBox = FSKitSendableBox(replyHandler)
         Task {
             do {
                 let data = try await self.withReconnect(reopening: ptItem) { () -> Data in
@@ -286,11 +294,11 @@ extension SMBKeepFSVolume: FSVolume.Operations {
                     return Data(dest.utf8)
                 }
                 guard data.count <= maxSymlinkSize else {
-                    return replyHandler(nil, POSIXError(.ENAMETOOLONG))
+                    return replyBox.value(nil, POSIXError(.ENAMETOOLONG))
                 }
-                return replyHandler(FSFileName(data: data), nil)
+                return replyBox.value(FSFileName(data: data), nil)
             } catch {
-                return replyHandler(nil, error)
+                return replyBox.value(nil, error)
             }
         }
     }
@@ -312,6 +320,9 @@ extension SMBKeepFSVolume: FSVolume.Operations {
 
         let dirSnapshot = dirItem.stateSnapshot()
         let childPath = dirSnapshot.smbPath.appendingSMBComponent(nameString)
+        let replyBox = FSKitSendableBox(replyHandler)
+        let newAttributesBox = FSKitSendableBox(newAttributes)
+        let nameBox = FSKitSendableBox(name)
         Task {
             do {
                 let newItem = try await self.withReconnect(reopening: dirItem) { () -> SMBKeepFSItem in
@@ -325,16 +336,16 @@ extension SMBKeepFSVolume: FSVolume.Operations {
                     }
                     return try await SMBKeepFSItem(name: nameString, parent: dirItem, type: type, backend: self.smb)
                 }
-                self.setAttributes(newAttributes, on: newItem, creatingNewFile: true) { attrs, error in
+                self.setAttributes(newAttributesBox.value, on: newItem, creatingNewFile: true) { attrs, error in
                     guard error == nil else {
-                        return replyHandler(nil, nil, error)
+                        return replyBox.value(nil, nil, error)
                     }
                     self.cache.setItem(newItem, forInode: newItem.inode)
                     self.invalidateEnumerationCache(forInode: dirSnapshot.inode)
-                    replyHandler(newItem, name, nil)
+                    replyBox.value(newItem, nameBox.value, nil)
                 }
             } catch {
-                return replyHandler(nil, nil, error)
+                return replyBox.value(nil, nil, error)
             }
         }
     }
@@ -364,20 +375,23 @@ extension SMBKeepFSVolume: FSVolume.Operations {
         let childPath = dirSnapshot.smbPath.appendingSMBComponent(nameString)
         let linkTarget = String(decoding: contents.data, as: Unicode.UTF8.self)
 
+        let replyBox = FSKitSendableBox(replyHandler)
+        let newAttributesBox = FSKitSendableBox(newAttributes)
+        let nameBox = FSKitSendableBox(name)
         Task {
             do {
                 try await self.smb.createSymbolicLink(atPath: childPath, withDestinationPath: linkTarget)
                 let newItem = try await SMBKeepFSItem(name: nameString, parent: dirItem, type: .symlink, backend: self.smb)
-                self.setAttributes(newAttributes, on: newItem, creatingNewFile: true) { _, error in
+                self.setAttributes(newAttributesBox.value, on: newItem, creatingNewFile: true) { _, error in
                     guard error == nil else {
-                        return replyHandler(nil, nil, error)
+                        return replyBox.value(nil, nil, error)
                     }
                     self.cache.setItem(newItem, forInode: newItem.inode)
                     self.invalidateEnumerationCache(forInode: dirSnapshot.inode)
-                    replyHandler(newItem, name, nil)
+                    replyBox.value(newItem, nameBox.value, nil)
                 }
             } catch {
-                replyHandler(nil, nil, error)
+                replyBox.value(nil, nil, error)
             }
         }
     }
@@ -401,6 +415,7 @@ extension SMBKeepFSVolume: FSVolume.Operations {
         }
         let dirSnapshot = dirItem.stateSnapshot()
 
+        let replyBox = FSKitSendableBox(replyHandler)
         Task {
             do {
                 try await self.withReconnect(reopening: dirItem) {
@@ -409,9 +424,9 @@ extension SMBKeepFSVolume: FSVolume.Operations {
                     self.cache.removeItem(forInode: itemSnapshot.inode)
                     self.invalidateEnumerationCache(forInode: dirSnapshot.inode)
                 }
-                return replyHandler(nil)
+                return replyBox.value(nil)
             } catch {
-                return replyHandler(error)
+                return replyBox.value(error)
             }
         }
     }
@@ -436,6 +451,9 @@ extension SMBKeepFSVolume: FSVolume.Operations {
         let fromInode = fromSnapshot.inode
         let destPath = toDirSnapshot.smbPath.appendingSMBComponent(destName)
 
+        let replyBox = FSKitSendableBox(replyHandler)
+        let overItemBox = FSKitSendableBox(overItem)
+        let destinationNameBox = FSKitSendableBox(destinationName)
         Task {
             do {
                 try await self.withReconnect {
@@ -443,16 +461,16 @@ extension SMBKeepFSVolume: FSVolume.Operations {
                     try await self.smb.moveItem(atPath: currentFrom.smbPath, toPath: destPath)
                     fromItem.updateIdentityAfterRename(name: destName, parent: toDir, smbPath: destPath)
 
-                    let over = overItem as? SMBKeepFSItem
+                    let over = overItemBox.value as? SMBKeepFSItem
                     let overInode = (over != nil && over !== fromItem) ? over?.inode : nil
                     self.cache.reassignItem(fromItem, fromInode: fromInode,
                                             toInode: fromItem.inode, replacingInode: overInode)
                     self.invalidateEnumerationCache(forInode: fromDirSnapshot.inode)
                     self.invalidateEnumerationCache(forInode: toDirSnapshot.inode)
                 }
-                return replyHandler(destinationName, nil)
+                return replyBox.value(destinationNameBox.value, nil)
             } catch {
-                return replyHandler(nil, error)
+                return replyBox.value(nil, error)
             }
         }
     }
@@ -477,8 +495,9 @@ extension SMBKeepFSVolume: FSVolume.Operations {
 
         // 显式捕获 FSKit 对象：它们在 Task 生命周期内必须保持存活，
         // 防止 FSKit 在回调返回后提前释放。
-        let retainedPacker = packer
-        let retainedAttributes = attributes
+        let retainedPacker = FSKitSendableBox(packer)
+        let retainedAttributes = attributes.map { FSKitSendableBox($0) }
+        let replyBox = FSKitSendableBox(replyHandler)
         Task {
             do {
                 let snapshot = try await self.withReconnect(reopening: dirItem) {
@@ -491,9 +510,9 @@ extension SMBKeepFSVolume: FSVolume.Operations {
                         var itemAttributes: FSItem.Attributes?
                         if let retainedAttributes {
                             itemAttributes = self.projectAttributes(entry.raw, itemType: entry.itemType,
-                                                                    parentInode: dirSnapshot.inode, desired: retainedAttributes)
+                                                                    parentInode: dirSnapshot.inode, desired: retainedAttributes.value)
                         }
-                        let packed = retainedPacker.packEntry(name: FSFileName(string: entry.name),
+                        let packed = retainedPacker.value.packEntry(name: FSFileName(string: entry.name),
                                                       itemType: entry.itemType,
                                                       itemID: FSItem.Identifier(rawValue: entry.itemID) ?? .invalid,
                                                       nextCookie: FSDirectoryCookie(UInt64(index + 1)),
@@ -501,9 +520,9 @@ extension SMBKeepFSVolume: FSVolume.Operations {
                         if !packed { break }
                     }
                 }
-                return replyHandler(FSDirectoryVerifier(snapshot.verifier), nil)
+                return replyBox.value(FSDirectoryVerifier(snapshot.verifier), nil)
             } catch {
-                return replyHandler(FSDirectoryVerifier(0), error)
+                return replyBox.value(FSDirectoryVerifier(0), error)
             }
         }
     }

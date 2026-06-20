@@ -475,6 +475,10 @@ extension SMBKeepFSVolume: FSVolume.Operations {
         // 让下面的操作（必要时经 recoverFromConnectionLoss）重新开始尝试重连。
         self.smb.resumeReconnects()
 
+        // 显式捕获 FSKit 对象：它们在 Task 生命周期内必须保持存活，
+        // 防止 FSKit 在回调返回后提前释放。
+        let retainedPacker = packer
+        let retainedAttributes = attributes
         Task {
             do {
                 let snapshot = try await self.withReconnect(reopening: dirItem) {
@@ -485,11 +489,11 @@ extension SMBKeepFSVolume: FSVolume.Operations {
                     for index in startIndex..<snapshot.entries.count {
                         let entry = snapshot.entries[index]
                         var itemAttributes: FSItem.Attributes?
-                        if let attributes {
+                        if let retainedAttributes {
                             itemAttributes = self.projectAttributes(entry.raw, itemType: entry.itemType,
-                                                                    parentInode: dirSnapshot.inode, desired: attributes)
+                                                                    parentInode: dirSnapshot.inode, desired: retainedAttributes)
                         }
-                        let packed = packer.packEntry(name: FSFileName(string: entry.name),
+                        let packed = retainedPacker.packEntry(name: FSFileName(string: entry.name),
                                                       itemType: entry.itemType,
                                                       itemID: FSItem.Identifier(rawValue: entry.itemID) ?? .invalid,
                                                       nextCookie: FSDirectoryCookie(UInt64(index + 1)),

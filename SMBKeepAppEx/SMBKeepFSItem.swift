@@ -23,7 +23,7 @@ class SMBKeepFSItem: FSItem {
     private let stateLock = NSLock()
     private var _smbPath: String
     private var _openMode: SMBKeepFSItemOpenMode
-    private var _parent: SMBKeepFSItem?
+    private weak var _parent: SMBKeepFSItem?
     private var _name: String
     private var _itemType: FSItem.ItemType
     private var _inode: UInt64

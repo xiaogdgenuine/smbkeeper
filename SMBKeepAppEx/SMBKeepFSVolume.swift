@@ -38,6 +38,7 @@ class SMBKeepFSVolume: FSVolume,
     let volumeLabel: String
     let connectionID: String
     let logger: TimestampedLogger
+    private let shareableTaskScheduler = ShareableTaskScheduler<String, Void>()
 
     /// 创建此卷所用的 SMB 配置。
     let smbConfig: SMBConfiguration
@@ -127,10 +128,12 @@ class SMBKeepFSVolume: FSVolume,
             return replyHandler(0, POSIXError(.EINVAL))
         }
 
-        Task {
+        let path = ptItem.smbPath
+        let snapshot = ptItem.stateSnapshot()
+
+        Task.detached {
             do {
                 let data = try await self.withReconnect {
-                    let snapshot = ptItem.stateSnapshot()
                     return try await self.smb.read(path: snapshot.smbPath, offset: UInt64(offset), length: length)
                 }
                 var copied = 0
@@ -141,7 +144,6 @@ class SMBKeepFSVolume: FSVolume,
                 }
                 return replyHandler(copied, nil)
             } catch {
-                let path = ptItem.smbPath
                 self.log("Read failed: \(path) error=\(error)")
                 self.logger.error("\(#function): read \(path) failed: \(error)")
                 return replyHandler(0, error)
@@ -231,27 +233,35 @@ class SMBKeepFSVolume: FSVolume,
     @discardableResult
     func recoverFromConnectionLoss(_ error: Error, reopening item: SMBKeepFSItem? = nil,
                                    mode: SMBKeepFSItemOpenMode = .readOnly) async -> Bool {
+
         guard self.isConnectionLost(error) else { return false }
-        self.log("Connection lost: \(error.localizedDescription) - attempting reconnect...")
-        // `reconnect()` 会把并发的调用方合并到同一次尝试上，因此这里不需要卷级别的锁。
-        guard await self.smb.reconnect() else {
-            self.log("Reconnect FAILED")
-            return false
-        }
-        self.log("Reconnect succeeded, clearing caches")
 
-        self.clearAllDirectoryCaches()
-
-        guard let item, item !== self.rootItem else { return true }
         do {
-            try item.forceReopen(mode: mode)
+            try await shareableTaskScheduler.request(key: "recoverFromConnectionLoss_reopening") {
+                self.log("Connection lost: \(error.localizedDescription) - attempting reconnect...")
+                // `reconnect()` 会把并发的调用方合并到同一次尝试上，因此这里不需要卷级别的锁。
+                guard await self.smb.reconnect() else {
+                    self.log("Reconnect FAILED")
+                    return
+                }
+                self.log("Reconnect succeeded, clearing caches")
+
+                self.clearAllDirectoryCaches()
+            }
+            guard let item, item !== self.rootItem else { return true }
+            do {
+                try item.forceReopen(mode: mode)
+            } catch {
+                let name = item.name
+                self.logger.error("\(#function): Failed to reopen \(name): \(error)")
+                self.log("Failed to reopen \(name): \(error)")
+                return false
+            }
+            return true
         } catch {
-            let name = item.name
             self.logger.error("\(#function): Failed to reopen \(name): \(error)")
-            self.log("Failed to reopen \(name): \(error)")
             return false
         }
-        return true
     }
 
     /// 执行一次带「断线 → 重连后重试一次」语义的异步操作。
